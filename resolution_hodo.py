@@ -39,16 +39,51 @@ from iminuit.cost import LeastSquares
 import runsets
 from uniformita_pos import fit_dcb, rel, wmean, wscatter, design, VERA, A_TOT_MIN
 from drift_dcb_all import syst_for_unit_chi2
-from hodoscope_calib import hodo_xy, FILES
+from hodoscope_calib import hodo_xy, FILES, parab, crystal_curvature
 
 SYNC_C = 1.92e-7
 ETA0, PHI0, SEL = 18., 6., 0.2
 
 
+PARAB_HALF = 8.              # semi-ampiezza del fit di parabola attorno al massimo
+W_MIN, W_MAX = 12., 40.      # larghezza di cristallo accettabile [mm]
+YSEARCH = (-6., 11.)         # range in cui cercare il plateau in y2
 PLATEAU_TOL = 0.005          # frazione sotto il massimo che conta ancora come piatta
 
 
-def window_from_response(h, at, tol, lo, hi, nb=30, nmin=150):
+def profile_peak(h, at, lo=None, hi=None, nb=40, nmin=150):
+    """Position of the smoothed maximum of the response profile.
+
+    Used to centre the parabola fit: fitting over the whole range the data span puts
+    most of the lever arm on the tails, where the response falls faster than a
+    parabola, and the vertex ends up wherever the tails pull it -- in one case at
+    -160 mm, outside the data. Locating the maximum first and fitting +- PARAB_HALF
+    around it keeps the fit on the part of the profile that is actually parabolic.
+    """
+    m = np.isfinite(h)
+    if lo is not None:
+        m &= h > lo
+    if hi is not None:
+        m &= h < hi
+    if m.sum() < 3000:
+        return None
+    e = np.linspace(np.percentile(h[m], 0.5), np.percentile(h[m], 99.5), nb + 1)
+    i = np.clip(np.digitize(h[m], e) - 1, 0, nb - 1)
+    xs, ys = [], []
+    for k in range(nb):
+        q = i == k
+        if q.sum() < nmin:
+            continue
+        xs.append(h[m][q].mean()); ys.append(at[m][q].mean())
+    if len(xs) < 6:
+        return None
+    ys = np.array(ys); xs = np.array(xs)
+    sm = np.convolve(ys, np.ones(3) / 3., mode="same")
+    sm[0], sm[-1] = ys[0], ys[-1]
+    return float(xs[int(np.argmax(sm))])
+
+
+def window_from_response(h, at, tol, lo=None, hi=None, nb=40, nmin=150):
     """Hodoscope window where the response is flat, without any calibration.
 
     The cut on the centroid selects the region around the crystal centre where the
@@ -58,18 +93,27 @@ def window_from_response(h, at, tol, lo, hi, nb=30, nmin=150):
     its plateau value. Nothing here uses the centroid, so the selection does not
     depend on the amplitudes whose width is being measured.
 
-    Ranges: x is used over [-15, 0] mm and y over [0, 8]. The y plane is only usable
-    above zero -- below it the profile is jagged, with bin-to-bin jumps of a percent
-    and no parabola -- and above 8 mm some energies show a rise of up to 2 % that is
-    not the crystal response and that the plateau search would otherwise lock onto.
+    In x no range is imposed: the profile covers the whole range the data span, from
+    the 0.5th to the 99.5th percentile, and the window is set only by where the
+    response is flat. In y the search is restricted to YSEARCH, because outside it the
+    y2 profile is not a response curve -- it jumps by a percent from bin to bin with
+    no shape -- and the plateau search locks onto a fluctuation: left free it puts the
+    80 GeV window at [-15.2, -13.8] mm with 1 % of the events and the 250 GeV one at
+    [+10.0, +13.7].
 
     Returns (lo, hi, drop_pct, n) with drop_pct the response variation across the
     window, which is what makes windows at different energies comparable.
     """
-    m = np.isfinite(h) & (h > lo) & (h < hi)
+    m = np.isfinite(h)
+    if lo is not None:
+        m &= (h > lo)
+    if hi is not None:
+        m &= (h < hi)
     if m.sum() < 3000:
         return None
-    e = np.linspace(np.percentile(h[m], 1), np.percentile(h[m], 99), nb + 1)
+    # nessun limite a priori: il profilo si fa su tutto il range coperto dai dati e
+    # la finestra la decide solo la piattezza della risposta
+    e = np.linspace(np.percentile(h[m], 0.5), np.percentile(h[m], 99.5), nb + 1)
     i = np.clip(np.digitize(h[m], e) - 1, 0, nb - 1)
     xs, ys, ns = [], [], []
     for k in range(nb):
@@ -169,6 +213,11 @@ def main():
     ap.add_argument("--resistances", nargs="+", type=int, default=[340])
     ap.add_argument("--half", type=float, default=SEL,
                     help="half-window of the centroid cut, in crystal units")
+    ap.add_argument("--window", choices=("plateau", "parabola"), default="plateau",
+                    help="plateau = range where the response stays within --tol of its "
+                         "maximum, no calibration; parabola = vertex of the response "
+                         "parabola +- half * W, with W the crystal width from the ratio "
+                         "of the curvatures in mm and in crystal units")
     ap.add_argument("--tol", type=float, default=PLATEAU_TOL,
                     help="how far below the maximum the response may fall inside the "
                          "hodoscope window; 0.005 means the plateau is kept to 0.5%%")
@@ -184,6 +233,7 @@ def main():
     for R in a.resistances:
         bes = load_bes(a.besdir, R)
         drift_syst = load_drift(a.plotdir, R)
+        cry = crystal_curvature(a.plotdir, R)
         d, pat = FILES[R]
         for f in sorted(glob.glob(os.path.join(a.base, d, pat)),
                         key=lambda p: int(re.match(r"(\d+)", os.path.basename(p)).group(1))):
@@ -206,8 +256,44 @@ def main():
             # finestra dove la risposta e' piatta, senza calibrazione: nessun offset,
             # nessuna scala, nessun uso del centroide
             core = base & (np.abs(at / np.median(at[base]) - 1) < 0.10)
-            wx = window_from_response(x[core], at[core], a.tol, -15., 0.)
-            wy = window_from_response(y[core], at[core], a.tol, 0., 8.)
+            if a.window == "parabola":
+                # offset dal vertice della parabola di risposta, scala dal rapporto
+                # fra la curvatura in mm e quella in unita' di cristallo
+                wx = wy = None
+                for tag, v, rng, coord in (("x", x, (None, None), "pos_eta"),
+                                           ("y", y, YSEARCH, "pos_phi")):
+                    vv = v[core]
+                    pk = profile_peak(vv, at[core], rng[0], rng[1])
+                    if pk is None:
+                        continue
+                    # intervallo di fit centrato sul massimo, non su tutto il range
+                    lo = pk - PARAB_HALF
+                    hi = pk + PARAB_HALF
+                    if rng[0] is not None:
+                        lo = max(lo, rng[0])
+                    if rng[1] is not None:
+                        hi = min(hi, rng[1])
+                    q = parab(vv, at[core], lo, hi)
+                    cc = cry.get((E, coord))
+                    if q is None or cc is None or not (q[1] < 0 and cc < 0):
+                        continue
+                    W = float(np.sqrt(cc / q[1]))
+                    # guardie: il vertice deve cadere dentro l'intervallo su cui la
+                    # parabola e' stata fittata, e W deve essere compatibile con un
+                    # cristallo. Senza, un profilo quasi piatto manda il vertice a
+                    # -160 mm e W a centinaia di mm, e la finestra finisce fuori dai
+                    # dati -- e' quello che succedeva a 500 ohm 80 GeV, dove il
+                    # taglio lasciava zero eventi
+                    if not (lo <= q[0] <= hi) or not (W_MIN <= W <= W_MAX):
+                        continue
+                    w = (q[0] - a.half * W, q[0] + a.half * W, 0., 0)
+                    if tag == "x":
+                        wx = w
+                    else:
+                        wy = w
+            else:
+                wx = window_from_response(x[core], at[core], a.tol)
+                wy = window_from_response(y[core], at[core], a.tol, *YSEARCH)
             if wx is None or wy is None:
                 print(f"  {R} ohm {E:>4} GeV: plateau non trovato, salto"); continue
             cut_h = (base & np.isfinite(x) & np.isfinite(y)
@@ -248,7 +334,11 @@ def main():
                 # e' definita e si usa l'errore della media pesata
                 wts = [1.0 / (e * e) if e > 0 else 0.0 for e in errs]
                 if not vals:
-                    out[tag] = np.nan; out[tag + "_err"] = np.nan; out["nrun_" + tag] = 0
+                    for k, v in ((tag, np.nan), (tag + "_stat", np.nan),
+                                 (tag + "_drift", 0.), (tag + "_pos", 0.),
+                                 (tag + "_err", np.nan)):
+                        out[k] = v
+                    out["nrun_" + tag] = 0
                     continue
                 mu, er = wmean(vals, errs, wts)
                 sc = wscatter(vals, wts)
