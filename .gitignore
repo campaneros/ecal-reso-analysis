@@ -1,0 +1,38 @@
+# Solo sorgenti. Tutto il resto -- dati, plot, cache, note -- resta fuori.
+#
+# La regola e': ignora tutto, poi riammetti esplicitamente le estensioni di
+# codice. Il "!*/" serve a lasciare che git scenda nelle sottocartelle: senza,
+# una directory ignorata viene saltata e i file dentro non vengono mai visti.
+
+*
+!*/
+!.gitignore
+
+# Python
+!*.py
+
+# C / C++ e macro ROOT
+!*.C
+!*.c
+!*.h
+!*.hh
+!*.cc
+!*.cxx
+!*.cpp
+
+# shell
+!*.sh
+!*.bash
+
+# DANTE (framework di ricostruzione, codice di terzi) non deve mai entrare:
+# la regola vale anche se un giorno la cartella venisse copiata qui dentro.
+DANTE/
+**/DANTE/
+
+# Cache dell'interprete
+__pycache__/
+
+# Restano fuori per costruzione: *.root *.png *.csv *.json *.md *.txt *.log,
+# le cache (_cache/ _mom/ _apply/ _rows/) e qualunque output.
+# Per pubblicare anche la documentazione, togliere il commento:
+# !README.md
