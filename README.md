@@ -261,56 +261,46 @@ all and is kept only as a cross-check.
 The standard selection cuts on the ECAL centroid, which is built from the same
 amplitudes whose width is being measured. `resolution_hodo.py` repeats the analysis
 with the position cut taken from the hodoscope, which is independent of the
-calorimeter, and produces both curves on the same plot
-(`plot/hodo/resolution_hodo_<R>ohm.png`).
+calorimeter.
 
 **The window needs no calibration.** It is the contiguous range around the maximum
-of the response profile where `<A_tot>` stays within 0.5 % of its plateau (`--tol`).
-x is the average of the two x planes over [-15, 0] mm, y is the second plane only
-over [0, 8] mm: the first y plane fires a single cluster in 42 % of events against
-65 % for the second, below zero the y profile is jagged with no parabola, and above
-8 mm some energies show a rise of up to 2 % that is not the crystal response.
+of the response profile where `<A_tot>` stays within `--tol` (default 0.5 %) of its
+plateau. x is the average of the two x planes over [-15, 0] mm, y is the second
+plane only over [0, 8] mm: the first y plane fires a single cluster in 42 % of events
+against 65 % for the second, below zero the y profile is jagged with no parabola, and
+above 8 mm some energies show a rise of up to 2 % that is not the crystal response.
+Only events with exactly one cluster in the planes used are kept, which costs a large
+fraction of the statistics; the fraction surviving is written to the output CSV point
+by point.
 
-**What differs between the two chains, and why.**
+**What differs between the two chains.** The position correction belongs only to the
+chain that cuts on the centroid: with the hodoscope the position does not enter the
+selection, so there is nothing to correct and POS_eff is not subtracted. The drift is
+computed and subtracted in both, each on its own selection.
 
 | | centroid cut | hodoscope cut |
 |---|---|---|
-| non-uniformity correction | applied, per-run 2D paraboloid | **not applied** |
-| POS_eff subtracted | yes | **no** |
+| non-uniformity correction | applied, per-run 2D paraboloid | not applied |
+| POS_eff subtracted | yes | no |
 | drift subtracted | yes, computed on this selection | yes, computed on this selection |
 | statistical error | sigma of the sigma, weights 1/sigma^2 | same |
 
-Plots: `plot/hodo/resolution_terms_cen.png` and `plot/hodo/resolution_terms_hodo.png`
-show the three resistances with the size of every subtracted term in the panel below,
-and `plot/hodo/resolution_hodo_<R>ohm.png` overlays the two cuts on the same axes.
+Because of this the constant term of the two chains is not the same quantity: the
+centroid one has POS_eff removed, the hodoscope one still contains it. They must not
+be compared directly.
 
-The position correction belongs only to the chain that cuts on the centroid. With
-the hodoscope the position does not enter the selection at all, so there is nothing
-to correct and nothing to subtract; the only systematic common to both chains is the
-drift, and it goes into the error bars, not into the subtraction.
+```bash
+python3 resolution_hodo.py --base <data> --outdir plot/hodo --besdir plot/bes \
+    --plotdir plot --resistances 340 400 500 --exclude 340:275
+```
 
-The consequence is that **the constant terms of the two chains are not the same
-quantity** and must not be quoted as a discrepancy: the centroid one has POS_eff
-removed, the hodoscope one still contains it. The difference in quadrature is
-consistent with the POS_eff of about 0.14 % that the centroid chain subtracts.
+Outputs: `resolution_hodo.csv` with both selections point by point, including the
+window limits, the response drop inside the window and the number of events kept;
+`resolution_hodo_<R>ohm.png` with the two cuts overlaid; and
+`resolution_terms_cen.png` / `resolution_terms_hodo.png` with the three resistances
+and the size of every subtracted term in the panel below.
 
-| | N (MeV) | S (%) | C (%) | chi2/ndf |
-|---|---|---|---|---|
-| 340 ohm, centroid | 280 +- 6 | 3.41 | 0.245 | 60.7/9 |
-| 340 ohm, hodoscope | 274 +- 9 | 3.36 | 0.300 | **20.7/9** |
-| 400 ohm, centroid | 309 +- 3 | 0.00 | 0.366 | 53.7/6 |
-| 400 ohm, hodoscope | 285 +- 11 | 1.13 | 0.415 | **17.2/6** |
-| 500 ohm, centroid | 264 +- 9 | 2.60 | 0.300 (fixed) | 98.8/5 |
-| 500 ohm, hodoscope | 290 +- 18 | 2.33 | 0.300 (fixed) | **39.1/5** |
-
-The chi2 is better with the hodoscope cut at all three resistances, by a factor 3 to
-5. Moving the cut off the centroid does not move N, and S stays compatible: the
-circularity of cutting on a variable built from the amplitudes is real but it does
-not bite.
-
-The cost is statistics: requiring exactly one cluster in the planes used keeps a
-median of 30-47 % of the events of the centroid cut, and as little as 7 % on the
-worst point (340 ohm 250 GeV, where the y plateau is only 1.75 mm wide). Points where
-the y profile is so flat that the 0.5 % threshold does not bite, and the window ends
-up set by the edges of the search range rather than by the response, should not be
-over-read either.
+`hodoscope_calib.py` measures the hodoscope offset and scale from the response
+(vertex of the parabola, and crystal width from the ratio of the curvatures in
+millimetres and in crystal units). It is not needed by the plateau cut and is kept as
+a separate check of the geometry.
