@@ -1,19 +1,11 @@
 #!/usr/bin/env python3
 """
-Sistematica di drift da sommare alla risoluzione energetica
-===========================================================
-Legge i CSV di drift_dcb_all.py e produce, energia per energia, l'errore
-sistematico relativo da sommare in quadratura a sigma/E.
+Drift systematic to be added to the energy resolution
+=====================================================
+Reads the CSV files produced by drift_dcb_all.py and returns, energy by energy, the
+relative systematic error to be added in quadrature to sigma/E.
 
-Metodo (lo stesso della slide "Systematic on centroid selection", applicato ai
-run invece che ai bin del centroide): i valori di sigma dei run alla stessa
-energia vengono fittati con una costante; l'errore relativo da aggiungere
-perche' chi2/ndf = 1 e' la sistematica. Se i run sono gia' compatibili -> 0.
-
-Le energie con un solo run non permettono la misura: prendono un valore di
-ripiego (default: la mediana di quelle misurate, esclusi i punti patologici).
-
-Uso: python3 sistematica_risoluzione.py --plotdir . [--fallback 4.0] [--escludi 340:275]
+Usage: python3 sistematica_risoluzione.py --plotdir . [--fallback 4.0] [--escludi 340:275]
 """
 import argparse, csv, os
 import numpy as np

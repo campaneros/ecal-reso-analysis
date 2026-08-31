@@ -1,36 +1,39 @@
 """
-Profili <A_tot> vs centroide, rifatti normalizzando ogni evento al picco del
-proprio run.
+<A_tot> vs centroid profiles, redone by normalising every event to the peak of its
+own run.
 
-Motivo. Dopo il re-merge molti file contengono piu' run, e a 340 ohm i run si
-dividono in due popolazioni di risposta distanti il 3.0-3.9%. Se i run sono
-centrati in punti diversi del cristallo, la media <A_tot>(eta) non e' piu' una
-curva di risposta ma la composizione dei run: dove pesa di piu' il run alto la
-media sale del 3.5%, e nasce una rampa al posto della parabola. A 340 ohm 150 GeV
-la curvatura relativa passa da -10.76 %/cristallo^2 (solo 20535, prima del
-re-merge) a +2.20 con 20535+20598 grezzi, chi2/ndf da 5.3 a 71.8.
+Why. After the re-merge many files contain several runs, and at 340 ohm the runs
+split into two response populations separated by a few percent (the size can be read
+off the per-run peaks written by drift_dcb_all.py). If the runs are centred at
+different points of the crystal, the mean <A_tot>(eta) is no longer a response curve
+but the composition of the runs: where the higher run carries more weight the mean
+goes up, and a ramp appears instead of the parabola -- the curvature can come out
+with the wrong sign and with a chi2/ndf orders of magnitude too large.
 
-Rimedio: A_tot -> A_tot / picco_DCB(run), poi riscalato al picco medio perche'
-l'asse resti in ADC. I run collassano uno sull'altro e la parabola torna: -9.55
-%/cristallo^2, chi2/ndf 5.1.
+Remedy: A_tot -> A_tot / peak_DCB(run), then rescaled to the average peak so that
+the axis stays in ADC. The runs collapse onto each other and the parabola comes
+back. The CSV produced also reports, next to every fit, the curvature one would get
+without normalising, so the effect is quantified point by point rather than in
+words.
 
-Fit: quadratica  a + b x + c x^2  su |x| <= 0.3, minimi quadrati LINEARI.
-NON la forma p1 + p2 (x - p0)^2 usata da parabole_all_energies.py: quella ha
-vertice e curvatura degeneri e su questi dati scappa -- sul
-profilo normalizzato in eta a 150 GeV dava p0 = +7.6, cioe' un vertice a sette
-cristalli di distanza. La curvatura si legge come c/a, in % per cristallo^2.
+Fit: quadratic  a + b x + c x^2  over |x| <= 0.3, LINEAR least squares.
+NOT the form p1 + p2 (x - p0)^2: that one has degenerate vertex and curvature -- a
+shift of the vertex is compensated by a change of curvature -- and on this data it
+runs away, returning vertices several crystals away from the fit window. The
+curvature is read as c/a, in % per crystal^2.
 
-Finestra su A_tot: picco +- NSIG sigma per run, con picco e sigma presi dalla
-cache di uniformita_pos.py (plot/uniformita/_cache/<R>_<E>.json). Se la cache
-manca il run viene saltato.
+A_tot window: peak +- NSIG sigma per run, with peak and sigma taken from the
+uniformita_pos.py cache (plot/uniformita/_cache/<R>_<E>.json). If the cache is
+missing the run is skipped.
 
-Uso:
+Usage:
   python3 plot/profili_pernorm.py --base . --outdir plot/profili \
       --resistances 340 --energies 20 30 40 60 --exclude-runs 20592 ...
   python3 plot/profili_pernorm.py --only-collect --outdir plot/profili
 """
 
 import argparse, os, glob, re, json
+import runsets
 import numpy as np
 import uproot
 import matplotlib
@@ -92,7 +95,7 @@ def load_cache(cachedir, R, E):
     return out or None
 
 
-def analyse(path, E, R, drop, cachedir, outdir):
+def analyse(path, E, R, drop, cachedir, outdir, only=()):
     per = load_cache(cachedir, R, E)
     if per is None:
         print(f"      manca la cache {cachedir}/{R}_{E}.json, salto")
@@ -107,6 +110,8 @@ def analyse(path, E, R, drop, cachedir, outdir):
     keep = (at > A_TOT_MIN) & np.isin(run, list(per))
     if drop:
         keep &= ~np.isin(run, drop)
+    if len(only):
+        keep &= np.isin(run, only)
     runs = sorted(int(r) for r in np.unique(run[keep]))
     if not runs:
         return None
@@ -182,8 +187,8 @@ COLS = ("resistance,energy,coord,nrun,nev,a,b,c,err_a,err_b,err_c,"
 
 
 def collect_plots(outdir, resistances):
-    """Tutte le energie di una resistenza sullo stesso plot, normalizzate ad a,
-    piu' la curvatura relativa in funzione dell'energia."""
+    """All the energies of one resistance on the same plot, normalised to a, plus the
+    relative curvature as a function of energy."""
     rows = []
     for l in open(os.path.join(outdir, "profili_pernorm.csv")).read().splitlines()[1:]:
         p = l.split(",")
@@ -253,8 +258,10 @@ def main():
     ap.add_argument("--resistances", nargs="+", type=int, default=[340, 400, 500])
     ap.add_argument("--energies", nargs="*", type=int, default=None)
     ap.add_argument("--exclude-runs", nargs="*", type=int, default=[])
+    runsets.add_argument(ap)
     ap.add_argument("--only-collect", action="store_true")
     a = ap.parse_args()
+    drop, only = runsets.resolve(a.runset, a.exclude_runs)
     os.makedirs(a.outdir, exist_ok=True)
     rowdir = os.path.join(a.outdir, "_rows"); os.makedirs(rowdir, exist_ok=True)
 
@@ -268,7 +275,7 @@ def main():
                 if a.energies is not None and E not in a.energies:
                     continue
                 print(f"  {R} ohm {E:4d} GeV", flush=True)
-                res = analyse(f, E, R, a.exclude_runs, a.cache, a.outdir)
+                res = analyse(f, E, R, drop, a.cache, a.outdir, only)
                 if res is None:
                     continue
                 json.dump(res["rows"], open(os.path.join(rowdir, f"{R}_{E}.json"), "w"),

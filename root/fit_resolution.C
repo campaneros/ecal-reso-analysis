@@ -1,34 +1,35 @@
 // ---------------------------------------------------------------------------
 //  fit_resolution.C
 //
-//  Quattro fit di  sigma/E = N/E (+) S/sqrt(E) (+) C, salvati come TGraphErrors,
-//  TF1 e TCanvas in un file .root versionabile.
+//  Four fits of  sigma/E = N/E (+) S/sqrt(E) (+) C, stored as TGraphErrors, TF1
+//  and TCanvas objects in a versionable .root file.
 //
-//  Due insiemi di punti, letti da plot/root/points.csv (li scrive
+//  Two sets of points, read from plot/root/points.csv (written by
 //  plot/fit_root_all.py):
-//     nopos   (sigma/E)^2 = (sigma/mu)^2 - BES^2 - sincrotrone^2
-//     pos     come sopra, meno anche POS_eff^2, la sistematica sul centroide
-//  In entrambi l'errore e' stat (+) drift.
+//     nopos   (sigma/E)^2 = (sigma/mu)^2 - BES^2 - synchrotron^2
+//     pos     as above, minus POS_eff^2 as well, the centroid systematic
+//  In both the error is stat (+) drift.
 //
-//  Due modi di fittare, per ciascun insieme:
-//     indep   N, S, C liberi per ogni resistenza. A 500 ohm C e' fissato a 0.300 %,
-//             perche' i dati arrivano solo a 150 GeV e non lo vincolano.
-//     common  S e C comuni alle tre resistenze, N libero per resistenza. Realizzato
-//             con un TGraphErrors combinato in cui l'ascissa e' E + 10000*indice
-//             della resistenza, e una TF1 a 5 parametri che la decodifica: cosi' il
-//             fit simultaneo si fa con un normale TGraphErrors::Fit.
+//  Two ways of fitting, for each set:
+//     indep   N, S, C free for each resistance. At 500 ohm C is fixed to 0.300 %,
+//             because the data only reach 150 GeV and do not constrain it.
+//     common  S and C common to the three resistances, N free per resistance.
+//             Implemented with a combined TGraphErrors whose abscissa is
+//             E + 10000*resistance index, and a 5-parameter TF1 that decodes it:
+//             this way the simultaneous fit is done with a plain
+//             TGraphErrors::Fit.
 //
-//  Oggetti scritti, con ds = nopos | pos e R = 340 | 400 | 500:
-//     gr_<ds>_<R>              punti
-//     f_<ds>_<R>_indep         fit per resistenza
-//     f_<ds>_<R>_common        curva del fit comune per quella resistenza
-//     gcomb_<ds>, fcomb_<ds>   grafico e funzione del fit simultaneo
-//     c_<ds>_indep, c_<ds>_common   canvas a tre pad
-//     summary                  TTree coi parametri di tutti i fit
+//  Objects written, with ds = nopos | pos and R = 340 | 400 | 500:
+//     gr_<ds>_<R>              the points
+//     f_<ds>_<R>_indep         per-resistance fit
+//     f_<ds>_<R>_common        curve of the common fit for that resistance
+//     gcomb_<ds>, fcomb_<ds>   graph and function of the simultaneous fit
+//     c_<ds>_indep, c_<ds>_common   three-pad canvases
+//     summary                  TTree with the parameters of every fit
 //
-//  Uso, dalla radice del repo:
+//  Usage, from the repository root:
 //      root -l -b -q plot/root/fit_resolution.C
-//      root -l -b -q 'plot/root/fit_resolution.C("altro.csv","altro.root")'
+//      root -l -b -q 'plot/root/fit_resolution.C("other.csv","other.root")'
 // ---------------------------------------------------------------------------
 
 #include <TGraphErrors.h>
@@ -53,10 +54,10 @@
 #include <cstdlib>
 #include <iostream>
 
-const double C_FIX_500 = 0.300;   // C fissato a 500 ohm, come in Python
-const double XOFF = 10000.0;      // offset che codifica la resistenza nel grafico combinato
+const double C_FIX_500 = 0.300;   // C fixed at 500 ohm, as in the Python version
+const double XOFF = 10000.0;      // offset encoding the resistance in the combined graph
 
-// sigma/E in PERCENTO. N in GeV, S e C in percento: convenzione di fit_plot.sh.
+// sigma/E in PERCENT. N in GeV, S and C in percent: the fit_plot.sh convention.
 double resoFun(double *x, double *p)
 {
    double E = x[0];
@@ -65,7 +66,7 @@ double resoFun(double *x, double *p)
    return TMath::Sqrt(n * n + s * s + p[2] * p[2]);
 }
 
-// p[0] = S, p[1] = C, p[2..4] = N di 340, 400, 500 ohm
+// p[0] = S, p[1] = C, p[2..4] = N of 340, 400, 500 ohm
 double resoCombined(double *x, double *p)
 {
    int idx = (int)(x[0] / XOFF);
@@ -87,10 +88,10 @@ void fit_resolution(const char *csvname = "plot/root/points.csv",
    gStyle->SetOptStat(0);
    gStyle->SetOptFit(0);
 
-   // ------------------------------------------------------------ lettura CSV
+   // ------------------------------------------------------------ CSV reading
    std::ifstream in(csvname);
    if (!in.is_open()) {
-      std::cout << "non riesco ad aprire " << csvname << std::endl;
+      std::cout << "cannot open " << csvname << std::endl;
       return;
    }
    std::map<std::string, Points> data;
@@ -115,13 +116,13 @@ void fit_resolution(const char *csvname = "plot/root/points.csv",
    }
    in.close();
    if (data.empty()) {
-      std::cout << "nessun punto letto da " << csvname << std::endl;
+      std::cout << "no points read from " << csvname << std::endl;
       return;
    }
 
    TFile *fout = TFile::Open(outname, "RECREATE");
    if (fout == 0 || fout->IsZombie()) {
-      std::cout << "non riesco a creare " << outname << std::endl;
+      std::cout << "cannot create " << outname << std::endl;
       return;
    }
 
@@ -153,7 +154,7 @@ void fit_resolution(const char *csvname = "plot/root/points.csv",
 
    for (int id = 0; id < nds; ++id) {
 
-      // ------------------------------------------------ grafici per resistenza
+      // ------------------------------------------------ graphs per resistance
       TGraphErrors *g[nres];
       bool have[nres];
       for (int ir = 0; ir < nres; ++ir) {
@@ -172,7 +173,7 @@ void fit_resolution(const char *csvname = "plot/root/points.csv",
          g[ir]->SetLineColor(colr[ir]);
       }
 
-      // --------------------------------------------------- fit per resistenza
+      // --------------------------------------------------- per-resistance fit
       TF1 *find[nres];
       for (int ir = 0; ir < nres; ++ir) {
          find[ir] = 0;
@@ -195,7 +196,7 @@ void fit_resolution(const char *csvname = "plot/root/points.csv",
          find[ir] = f;
       }
 
-      // ------------------------------------------------------- fit simultaneo
+      // ------------------------------------------------------- simultaneous fit
       std::vector<double> cx, cy, cex, cey;
       for (int ir = 0; ir < nres; ++ir) {
          if (!have[ir]) continue;
@@ -220,7 +221,7 @@ void fit_resolution(const char *csvname = "plot/root/points.csv",
       double chi2com = fc->GetChisquare();
       int    ndfcom = fc->GetNDF();
 
-      // curve del fit comune, una per resistenza, per poterle disegnare
+      // curves of the common fit, one per resistance, so they can be drawn
       TF1 *fcom[nres];
       for (int ir = 0; ir < nres; ++ir) {
          fcom[ir] = 0;
@@ -239,7 +240,7 @@ void fit_resolution(const char *csvname = "plot/root/points.csv",
          fcom[ir] = f;
       }
 
-      // ----------------------------------------------------------- disegno
+      // ----------------------------------------------------------- drawing
       for (int mode = 0; mode < 2; ++mode) {
          const char *mname = (mode == 0 ? "indep" : "common");
          TCanvas *c = new TCanvas(Form("c_%s_%s", dsname[id], mname),
@@ -268,8 +269,8 @@ void fit_resolution(const char *csvname = "plot/root/points.csv",
             pt->SetTextAlign(12);
             pt->SetTextFont(82);
             pt->SetTextSize(0.032);
-            // in modalita' common la TF1 ha i parametri congelati, quindi l'errore
-            // su N va preso dal fit simultaneo, non da lei
+            // in common mode the TF1 has frozen parameters, so the error on N must
+            // be taken from the simultaneous fit, not from it
             double eN = (mode == 0 ? f->GetParError(0) : fc->GetParError(2 + ir));
             pt->AddText(Form("N %6.1f #pm %4.1f MeV", 1000 * f->GetParameter(0), 1000 * eN));
             pt->AddText(Form("S %6.3f  C %6.4f%s", f->GetParameter(1), f->GetParameter(2),
@@ -285,7 +286,7 @@ void fit_resolution(const char *csvname = "plot/root/points.csv",
          c->Write();
       }
 
-      // ------------------------------------------------- scrittura e stampa
+      // ------------------------------------------------- writing and printing
       fout->cd();
       gc->Write();
       fc->Write();
@@ -319,5 +320,5 @@ void fit_resolution(const char *csvname = "plot/root/points.csv",
    fout->cd();
    tree->Write();
    fout->Close();
-   std::cout << std::endl << "scritto " << outname << std::endl;
+   std::cout << std::endl << "written " << outname << std::endl;
 }

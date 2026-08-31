@@ -1,44 +1,46 @@
 """
-Sistematica sulla correzione di non-uniformita': mappa per RUN contro mappa MEDIA.
+Systematic on the non-uniformity correction: per-RUN map against an AVERAGE map.
 
-Invece di misurare la sistematica come "correggo contro non correggo" -- che e' la
-dimensione dell'effetto, non un'incertezza -- la si misura come sensibilita' a COME
-si stima la superficie di risposta. Tre stime, sempre la stessa forma quadratica
+Rather than measuring the systematic as "corrected against uncorrected" -- which is
+the size of the effect, not an uncertainty -- it is measured as the sensitivity to
+HOW the response surface is estimated. Three estimates, always the same quadratic
+form
 
     f(u,v) = a0 + a1 u + a2 v + a3 u^2 + a4 v^2 + a5 uv,   u = pos_eta-18, v = pos_phi-6
 
-  run      una superficie per ciascun run, dai soli eventi di quel run
-  energy   una superficie per (resistenza, energia), da tutti i run di quel punto
-           normalizzati al proprio picco
-  mean     una sola superficie per resistenza, da tutti i run di tutte le energie
+  run      one surface per run, from the events of that run only
+  energy   one surface per (resistance, energy), from all the runs of that point
+           normalised to their own peak
+  mean     a single surface per resistance, from all the runs of all energies
 
-Il punto nominale usa la mappa per RUN; la sistematica sul centroide e'
-|sigma(mappa per run) - sigma(mappa per energia)|. La variante 'mean' resta come
-diagnostica: mostra quanto conta ignorare che la curvatura cambia con l'energia.
+The nominal point uses the per-RUN map; the centroid systematic is
+|sigma(per-run map) - sigma(per-energy map)|. The 'mean' variant is kept as a
+diagnostic: it shows how much it costs to ignore that the curvature changes with
+energy.
 
-Come e' fatto il fit. Non si binna: il fit lineare pesato sulla mappa binnata a
-grana fine coincide con la regressione sui singoli eventi, e le statistiche
-sufficienti sono la matrice dei momenti  M = sum_i x_i x_i'  e  b = sum_i x_i a_i,
-con x_i = [1, u, v, u^2, v^2, uv] e a_i = A_i / picco(run). Sono 6x6 + 6 numeri per
-run: si sommano sui run per la mappa per energia, e su tutte le energie per quella
-media, senza rileggere gli eventi. Cosi' le tre stime sono esattamente lo stesso
-stimatore su insiemi diversi, e differiscono solo per quello che si vuole misurare.
+How the fit is done. There is no binning: the weighted linear fit on a fine-grained
+binned map coincides with the regression on individual events, and the sufficient
+statistics are the moment matrix M = sum_i x_i x_i' and b = sum_i x_i a_i, with
+x_i = [1, u, v, u^2, v^2, uv] and a_i = A_i / peak(run). That is 6x6 + 6 numbers per
+run: they are summed over runs for the per-energy map, and over all energies for the
+average one, without re-reading the events. The three estimates are then exactly the
+same estimator on different sets, and differ only by what one wants to measure.
 
-Due passate, perche' la mappa media ha bisogno di tutte le energie prima di poter
-essere applicata:
+Two passes, because the average map needs all energies before it can be applied:
 
-  --stage moments   legge i file, fit DCB per run, calcola e salva M, b, n per run
-  --stage apply     costruisce le tre superfici, riapplica la correzione e rifa'
-                    i fit DCB, una volta per variante
-  --stage collect   assembla CSV e plot
+  --stage moments   reads the files, DCB fit per run, computes and stores M, b, n
+  --stage apply     builds the three surfaces, re-applies the correction and redoes
+                    the DCB fits, once per variant
+  --stage collect   assembles CSV and plots
 
-Uso:
+Usage:
   python3 plot/uniformita_maps.py --stage moments --resistances 340 --energies 20 30 40
   python3 plot/uniformita_maps.py --stage apply   --resistances 340 --energies 20 30 40
   python3 plot/uniformita_maps.py --stage collect
 """
 
 import argparse, os, sys, glob, re, json, math
+import runsets
 import numpy as np
 import uproot
 import matplotlib
@@ -68,13 +70,15 @@ def solve(M, b):
 
 
 # ------------------------------------------------------------------ momenti
-def stage_moments(path, E, R, drop, outdir):
+def stage_moments(path, E, R, drop, outdir, only=()):
     t = uproot.open(path)["h4_reco"]
     arr = t.arrays(["run", "A_tot", "pos_eta", "pos_phi"], library="np")
     k = ((np.abs(arr["pos_eta"] - ETA0) <= SEL) & (np.abs(arr["pos_phi"] - PHI0) <= SEL)
          & (arr["A_tot"] > A_TOT_MIN))
     if drop:
         k &= ~np.isin(arr["run"], drop)
+    if len(only):
+        k &= np.isin(arr["run"], only)
     run = arr["run"][k]
     at = arr["A_tot"][k].astype(float)
     u = arr["pos_eta"][k].astype(float) - ETA0
@@ -123,7 +127,7 @@ def sum_moments(cachelist):
     return M, b, n
 
 
-def stage_apply(path, E, R, drop, momdir, outdir):
+def stage_apply(path, E, R, drop, momdir, outdir, only=()):
     here = load_moments(momdir, R, E)
     if not here:
         print("      niente momenti, salto"); return None
@@ -140,6 +144,8 @@ def stage_apply(path, E, R, drop, momdir, outdir):
          & (arr["A_tot"] > A_TOT_MIN))
     if drop:
         k &= ~np.isin(arr["run"], drop)
+    if len(only):
+        k &= np.isin(arr["run"], only)
     run = arr["run"][k]
     at = arr["A_tot"][k].astype(float)
     u = arr["pos_eta"][k].astype(float) - ETA0
@@ -180,7 +186,7 @@ def stage_apply(path, E, R, drop, momdir, outdir):
                coef_energy=[float(x) for x in coef_ene],
                coef_mean=[float(x) for x in coef_mean])
     out["raw"] = wmean([r["raw"][0] for r in ok], [r["raw"][1] for r in ok], wts)
-    # chiave s_<var>: "energy" da solo sarebbe gia' l'energia del fascio
+    # key s_<var>: "energy" alone would already be the beam energy
     for var in VARIANTS:
         s = [r for r in ok if var in r]
         out["s_" + var] = (wmean([r[var][0] for r in s], [r[var][1] for r in s],
@@ -190,7 +196,7 @@ def stage_apply(path, E, R, drop, momdir, outdir):
 
 
 # ----------------------------------------------------------------- raccolta
-# nel CSV le varianti si chiamano s_<v>: "energy" da solo sarebbe l'energia del fascio
+# in the CSV the variants are named s_<v>: "energy" alone would be the beam energy
 COLS = ("resistance,energy,energy_true,nrun,nev,n_fallback,raw,err_raw,scat_run,"
         + ",".join(f"s_{v},err_{v}" for v in VARIANTS)
         + ",syst_pct,syst_rel_pct,"
@@ -204,12 +210,12 @@ def stage_collect(outdir, resistances):
         R, E = int(c["resistance"]), int(c["energy"])
         if R not in resistances:
             continue
-        # Nominale: correzione con la parabola del SINGOLO RUN.
-        # Sistematica sul centroide: contro la parabola dell'ENERGIA, cioe' quella
-        # che si ottiene mettendo insieme i run di quel punto. Sui punti a un solo
-        # run le due coincidono per costruzione e la sistematica e' zero: li' non
-        # c'e' nessuna ambiguita' da misurare. La variante 'mean' per resistenza
-        # resta nel CSV come diagnostica e non entra nel numero.
+        # Nominal: correction with the parabola of the SINGLE RUN.
+        # Centroid systematic: against the parabola of the ENERGY, i.e. the one
+        # obtained by pooling the runs of that point. On points with a single run
+        # the two coincide by construction and the systematic is zero: there is no
+        # ambiguity to measure there. The per-resistance 'mean' variant stays in the
+        # CSV as a diagnostic and does not enter the number.
         sr, se = c["s_run"][0], c["s_energy"][0]
         syst = abs(sr - se) if (np.isfinite(sr) and np.isfinite(se)) else np.nan
         ce, cm = np.array(c["coef_energy"]), np.array(c["coef_mean"])
@@ -279,8 +285,10 @@ def main():
     ap.add_argument("--outdir", default="plot/uniformita_maps")
     ap.add_argument("--resistances", nargs="+", type=int, default=[340, 400, 500])
     ap.add_argument("--energies", nargs="*", type=int, default=None)
+    runsets.add_argument(ap)
     ap.add_argument("--exclude-runs", nargs="*", type=int, default=[])
     a = ap.parse_args()
+    drop, only = runsets.resolve(a.runset, a.exclude_runs)
     momdir = os.path.join(a.outdir, "_mom")
     appdir = os.path.join(a.outdir, "_apply")
     for d in (a.outdir, momdir, appdir):
@@ -300,11 +308,11 @@ def main():
                 continue
             print(f"  {R} ohm {E:4d} GeV", flush=True)
             if a.stage == "moments":
-                r = stage_moments(f, E, R, a.exclude_runs, momdir)
+                r = stage_moments(f, E, R, drop, momdir, only)
                 if r:
                     print(f"      {len(r['per_run'])} run con momenti", flush=True)
             else:
-                r = stage_apply(f, E, R, a.exclude_runs, momdir, appdir)
+                r = stage_apply(f, E, R, drop, momdir, appdir, only)
                 if r:
                     print(f"      raw {r['raw'][0]:.4f}   run {r['s_run'][0]:.4f}   "
                           f"energy {r['s_energy'][0]:.4f}   mean {r['s_mean'][0]:.4f}"

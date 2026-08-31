@@ -44,14 +44,14 @@ E_TRUE = {20: 20.00, 30: 30.00, 40: 39.99, 50: 49.98, 60: 59.97, 80: 79.90,
 
 
 def sync_pct(E):
-    """Termine di sincrotrone in percento: 1.92e-7 * E^2.5 (come in fit_plot.sh)."""
+    """Synchrotron term in percent: 1.92e-7 * E^2.5 (as in fit_plot.sh)."""
     return 1.92e-7 * np.power(E, 2.5)
 
 
 def reso(x, N, S, C):
-    """sigma/E in PERCENTO, con la stessa convenzione di fit_plot.sh:
-       frazione = N/E (+) (S/100)/sqrt(E) (+) C/100   ->   N in GeV, S e C in %.
-    Siccome qui lavoro in percento, il termine di rumore va moltiplicato per 100."""
+    """sigma/E in PERCENT, with the same convention as fit_plot.sh:
+       fraction = N/E (+) (S/100)/sqrt(E) (+) C/100   ->   N in GeV, S and C in %.
+    Since everything here is in percent, the noise term has to be multiplied by 100."""
     return np.sqrt((100 * N / x) ** 2 + (S / np.sqrt(x)) ** 2 + C ** 2)
 
 
@@ -69,7 +69,7 @@ def load(plotdir, besdir, R):
         elif r["fit_ok"] == "1":
             per_run.setdefault(E, []).append(
                 (int(r["nev"]), float(r["sigma_abs"]), float(r["peak_abs"])))
-    # media delle sigma per run PESATA CON IL NUMERO DI EVENTI del run
+    # mean of the per-run sigmas WEIGHTED BY THE NUMBER OF EVENTS in the run
     for E, v in per_run.items():
         if E not in out:
             continue
@@ -122,7 +122,7 @@ def main():
             continue
         x = np.array([E_TRUE.get(e, e) for e in Es])
         if a.source == "runmean":
-            # media delle sigma per run dove esiste (>=2 run), altrimenti il singolo run
+            # mean of the per-run sigmas where it exists (>=2 runs), else the single run
             raw = np.array([100 * d[e]["sigma_runmean"] / d[e]["peak_runmean"]
                             if "sigma_runmean" in d[e] else d[e]["rel"] for e in Es])
         else:
@@ -131,7 +131,7 @@ def main():
         syn = sync_pct(x)
         estat = np.array([100 * d[e]["err_sigma"] / d[e]["peak"] for e in Es])
         if a.source == "runmean":
-            # la banda e' la sistematica di drift sulla sigma, in ADC -> percento
+            # the band is the drift systematic on sigma, in ADC -> percent
             esyst = np.array([100 * d[e]["syst_sigma_abs"] / d[e]["peak_runmean"]
                               if "syst_sigma_abs" in d[e] else 0. for e in Es])
         else:
@@ -139,9 +139,9 @@ def main():
                               for i in range(len(Es))])
         etot = np.hypot(estat, esyst)
 
-        # drift = sistematica sul PICCO: run a picchi diversi, mediati insieme,
-        # allargano la distribuzione. Va sottratta in quadratura, non e' un errore.
-        # con la media per run il drift non entra: niente da sottrarre
+        # drift = systematic on the PEAK: runs with different peaks, averaged
+        # together, widen the distribution. It has to be subtracted in quadrature, it
+        # is not an error. With the per-run mean drift never enters: nothing to subtract
         dr = (np.zeros(len(Es)) if a.source == "runmean"
               else np.array([d[e].get("drift_pct", 0.) for e in Es]))
 
@@ -151,14 +151,14 @@ def main():
         step2 = _sub(raw ** 2 - dr ** 2 - bes ** 2)
         step3 = _sub(raw ** 2 - dr ** 2 - bes ** 2 - syn ** 2)
 
-        # curva di confronto: la sigma del fit globale con il drift sottratto.
-        # Se l'interpretazione e' giusta deve coincidere con la media delle
-        # sigma per run, che il drift non lo vede proprio.
+        # comparison curve: the sigma of the global fit with the drift subtracted.
+        # If the interpretation is right it has to coincide with the mean of the
+        # per-run sigmas, which does not see the drift at all.
         glob_raw = np.array([d[e]["rel"] for e in Es])
         glob_dr = np.array([d[e].get("drift_pct", 0.) for e in Es])
         glob_nodrift = _sub(glob_raw ** 2 - glob_dr ** 2)
 
-        # limiti in y calcolati una volta e riusati identici nelle due figure
+        # y limits computed once and reused identically in the two figures
         top_hi = float(np.nanmax(np.concatenate([raw, step3])) * 1.08)
         terms = np.concatenate([raw, bes, syn, dr[dr > 0]]) if (dr > 0).any() \
             else np.concatenate([raw, bes, syn])
@@ -176,15 +176,15 @@ def main():
                     label=("$-$ BES $-$ synchrotron   (fitted)" if a.source == "runmean"
                            else "$-$ drift $-$ BES $-$ synchrotron   (fitted)"))
 
-        # media delle sigma per run, con la sua banda
+        # mean of the per-run sigmas, with its band
         xr = [E_TRUE.get(e, e) for e in Es if "sigma_runmean" in d[e]]
         yr = np.array([100 * d[e]["sigma_runmean"] / d[e]["peak_runmean"]
                        for e in Es if "sigma_runmean" in d[e]])
         br = np.array([100 * d[e].get("syst_sigma_abs", 0.) / d[e]["peak_runmean"]
                        for e in Es if "sigma_runmean" in d[e]])
         if len(xr) and a.source != "runmean":
-            # barre e non area: le energie con >=2 run sono sparse, e un
-            # fill_between le interpolerebbe disegnando un cuneo inesistente
+            # bars and not a band: the energies with >=2 runs are scattered, and a
+            # fill_between would interpolate them, drawing a wedge that is not there
             ax.errorbar(xr, yr, yerr=br, fmt="v", ms=9, mfc="none", mec="C2",
                         mew=2, ecolor="C2", elinewidth=2.5, capsize=5,
                         label="mean of the per-run $\\sigma$ $\\pm$ drift band",
@@ -198,7 +198,7 @@ def main():
             mi.limits["N"] = (0, None); mi.limits["S"] = (0, None); mi.limits["C"] = (0, None)
             if R == 500:
                 mi.fixed["C"] = True          # C fissato a 0.3: i dati arrivano
-                                              # solo a 150 GeV e non lo vincolano
+                                              # only to 150 GeV and do not constrain it
             mi.migrad(); mi.hesse()
             if R == 340:
                 S_340 = mi.values["S"]
@@ -222,10 +222,10 @@ def main():
         ax.grid(alpha=.3); ax.legend(fontsize=8)
         ax.set_ylim(0, top_hi)
 
-        # ---- pannello: quanto vale ogni contributo sottratto
+        # ---- panel: the size of each subtracted contribution
         ax2.plot(x, raw, "o-", ms=5, color="0.35", label="$\\sigma/\\mu$")
-        # i punti a zero non si disegnano: su scala log matplotlib ci tirerebbe
-        # una riga verticale fino al fondo dell'asse
+        # zero points are not drawn: on a log scale matplotlib would draw a
+        # vertical line down to the bottom of the axis
         if a.source != "runmean":
             ax2.plot(x, np.where(dr > 0, dr, np.nan), "s--", ms=5, color="C0",
                      label="drift (on the peak)")
@@ -254,7 +254,7 @@ def main():
         for r in rows:
             fh.write(",".join(f"{v:.5f}" if isinstance(v, float) else str(v)
                               for v in r) + "\n")
-    # ------------------------------------------------- fit simultaneo, S e C comuni
+    # ------------------------------------------------- simultaneous fit, S and C common
     Rs = [R for R in (340, 400, 500) if R in store]
     if len(Rs) >= 2:
         def chi2(S, C, N340, N400, N500):

@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """
-Drift in tempo + fit double-sided Crystal Ball per run -- TUTTE le resistenze
-=============================================================================
-CMS ECAL TB H4 Jun2026. Gira su tutti i file <E>[_<R>]_merged.root che trova
-in reco_340ohm/, reco_400ohm/, reco_500ohm/ e scrive i plot in plot/<R>/.
+Time drift + double-sided Crystal Ball fit per run -- ALL resistances
+=====================================================================
+CMS ECAL TB H4 Jun2026. Runs over every <E>[_<R>]_merged.root file found in
+reco_340ohm/, reco_400ohm/, reco_500ohm/ and writes the plots to plot/<R>/.
 
-Per ogni (resistenza, energia) produce:
-  drift_Atot_vs_evento_<E>GeV_<R>ohm.png   A_tot vs # evento ordinato + profilo mediano
-  dcb_fits_per_run_<E>GeV_<R>ohm.png       i singoli fit double-CB, uno per run
-  picco_sigma_vs_run_<E>GeV_<R>ohm.png     picco, sigma e sigma/mu vs run
-Per ogni resistenza:
-  drift_per_run_<R>ohm.csv                 tutti i risultati di fit
-  sommario_drift_<R>ohm.png                spread run-to-run del picco vs energia
+For each (resistance, energy) it produces:
+  drift_Atot_vs_evento_<E>GeV_<R>ohm.png   A_tot vs ordered event number + median profile
+  dcb_fits_per_run_<E>GeV_<R>ohm.png       the individual double-CB fits, one per run
+  picco_sigma_vs_run_<E>GeV_<R>ohm.png     peak, sigma and sigma/mu vs run
+For each resistance:
+  drift_per_run_<R>ohm.csv                 all the fit results
+  sommario_drift_<R>ohm.png                run-to-run spread of the peak vs energy
 
-Perche' serve riordinare: l'hadd non mescola i run (il branch `run` e' gia'
-monotono) ma dentro ogni run gli spill sono in ordine sparso, e dentro ogni
-spill il contatore `evt` e' ruotato (parte da un valore alto e riavvolge).
-I branch time_* sono tutti a zero, quindi non c'e' timestamp per evento.
-L'ordine cronologico si ripristina con lexsort su (run, spill, evt).
+Why the events have to be reordered: hadd does not mix the runs (the `run` branch is
+already monotonic), but within each run the spills come in scattered order, and
+within each spill the `evt` counter is rotated -- it starts from a high value and
+wraps around. The time_* branches are all zero, so there is no per-event timestamp.
+Chronological order is restored with a lexsort on (run, spill, evt).
 
-Uso:
-  python3 drift_dcb_all.py --base <cartella con reco_*ohm/> --outdir plot \
-                           [--resistances 340 400 500] [--timestamps timestamps_runs.txt]
+Usage:
+  python3 drift_dcb_all.py --base <directory with reco_*ohm/> --outdir plot \
+      [--resistances 340 400 500] [--timestamps timestamps_runs.txt]
 """
 
 import argparse
@@ -36,10 +36,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.transforms as mtransforms
+import runsets
 from iminuit import Minuit
 from iminuit.cost import LeastSquares
 
-# scala ADC->GeV usata in fit.sh per scegliere la finestra iniziale
+# ADC->GeV scale used in fit.sh to choose the initial window
 SCALE = {340: 3500 / 150., 400: 1080 / 40., 500: 3340 / 100.}
 
 # binning identico a fit.sh:  A_tot>>h(8000, 0, 8000)
@@ -49,9 +50,9 @@ CUT_LABEL = ("$|\\mathrm{pos\\_eta}-18| \\leq 0.2$,  "
              "$|\\mathrm{pos\\_phi}-6| \\leq 0.2$,  $A_{tot} > 0$")
 BOX = ("$|\\mathrm{pos\\_eta}-18| < 0.6$,  $|\\mathrm{pos\\_phi}-6| < 0.6$")
 
-# Soglia di rumore per mappe e profili:
-#   base 80 ADC fino a 50 GeV, 200 ADC sopra;
-#   in piu' il 5% del nominale quando questo supera gli 80 ADC.
+# Noise threshold for maps and profiles:
+#   base 80 ADC up to 50 GeV, 200 ADC above;
+#   plus 5% of the nominal value when the latter exceeds 80 ADC.
 A_TOT_BASE_LOW, A_TOT_BASE_HIGH, E_LOW = 80., 200., 50.
 A_TOT_FRAC = 0.05
 
@@ -65,7 +66,7 @@ RUN_TIME = {}          # riempito da load_timestamps()
 
 
 def load_timestamps(path):
-    """timestamps_runs.txt: righe tipo 'Jun 12 00:37 20769'."""
+    """timestamps_runs.txt: lines of the form 'Jun 12 00:37 20769'."""
     if not path or not os.path.exists(path):
         print(f"  [!] timestamps non trovati ({path}): i plot avranno solo il numero di run")
         return
@@ -100,7 +101,7 @@ def dcb_func(x, alpha_l, alpha_h, n_l, n_h, mean, sigma, N):
 
 
 def hist_stats(counts, centers, lo, hi):
-    """Media e RMS del TH1 ristretto a [lo, hi] (come GetMean/GetRMS con SetRangeUser)."""
+    """Mean and RMS of the TH1 restricted to [lo, hi] (like GetMean/GetRMS with SetRangeUser)."""
     m = (centers >= lo) & (centers <= hi)
     c, x = counts[m], centers[m]
     tot = c.sum()
@@ -111,8 +112,8 @@ def hist_stats(counts, centers, lo, hi):
 
 
 def mode_window(values, energy, resistance):
-    """Finestra di ripiego centrata sulla MODA di A_tot, per i run in cui il picco
-    non sta dove lo mette la ricetta di fit.sh (es. 340 ohm 275 GeV run 20636-20639)."""
+    """Fallback window centred on the MODE of A_tot, for the runs whose peak does not
+    sit where the fit.sh recipe puts it (e.g. 340 ohm 275 GeV, runs 20636-20639)."""
     nominal = SCALE[resistance] * energy
     v = values[(values > 0.5 * nominal) & (values < 1.3 * nominal)]
     if len(v) < 100:
@@ -126,8 +127,8 @@ def mode_window(values, energy, resistance):
 
 
 def fit_dcb(values, energy, resistance, n_iter=3, rebin=1, init_window=None):
-    """Ricetta di fit.sh: finestra scale*E*(0.95,1.05) -> mean+-3RMS (x2) -> dcb (x3).
-    Con init_window si parte da una finestra diversa (vedi mode_window)."""
+    """The fit.sh recipe: window scale*E*(0.95,1.05) -> mean+-3RMS (x2) -> dcb (x3).
+    With init_window the fit starts from a different window (see mode_window)."""
     nb = NBINS // rebin
     counts, edges = np.histogram(values, bins=nb, range=(XLO, XHI))
     counts = counts.astype(float)
@@ -165,15 +166,15 @@ def fit_dcb(values, energy, resistance, n_iter=3, rebin=1, init_window=None):
         m.migrad()
         m.hesse()
         best = m
-        seed = {p: m.values[p] for p in seed}                 # re-seed dal fit precedente
+        seed = {p: m.values[p] for p in seed}                 # re-seed from the previous fit
 
-    # HESSE puo' fallire ("covariance not pos. def.") quando i parametri di coda
-    # sono degeneri: se la finestra e' mean+-3RMS spesso NON ci sono bin oltre
-    # alpha_h, quindi alpha_h/n_h non influenzano il chi2 (gradiente esattamente 0)
-    # e la matrice e' singolare -> errori tutti nulli. Stessa cosa se n_l finisce
-    # sul limite 10 di dcb.cxx. In quei casi blocco le code al valore fittato e
-    # rifitto solo (mean, sigma, N): il picco e la sigma non cambiano, ma gli
-    # errori diventano calcolabili (sono condizionati alla forma delle code).
+    # HESSE can fail ("covariance not pos. def.") when the tail parameters are
+    # degenerate: with a mean+-3RMS window there are often NO bins beyond alpha_h, so
+    # alpha_h/n_h do not affect the chi2 (gradient exactly 0) and the matrix is
+    # singular -> all errors null. The same happens if n_l ends up on the limit of 10
+    # from dcb.cxx. In those cases the tails are frozen at the fitted value and only
+    # (mean, sigma, N) are refitted: peak and sigma do not change, but the errors
+    # become computable (they are conditional on the shape of the tails).
     TAILS = ("alpha_l", "alpha_h", "n_l", "n_h")
     hesse_ko = (best.covariance is None or best.errors["sigma"] <= 0
                 or best.errors["mean"] <= 0)
@@ -210,8 +211,8 @@ def _healthy(r, rb):
 
 
 def fit_dcb_auto(values, energy, resistance, rebins=(1, 5, 10, 20, 40)):
-    """Binning via via piu' grosso; se la finestra di fit.sh non becca il picco,
-    ripiega sulla finestra centrata sulla moda. Ritorna (risultato, rebin, finestra)."""
+    """Progressively coarser binning; if the fit.sh window misses the peak, it falls
+    back to the window centred on the mode. Returns (result, rebin, window)."""
     last = (None, 0, "std")
     mw = mode_window(values, energy, resistance)
     for tag, win in (("std", None), ("mode", mw)):
@@ -231,10 +232,10 @@ def fit_dcb_auto(values, energy, resistance, rebins=(1, 5, 10, 20, 40)):
 
 # ================================================================= sistematica
 def syst_for_unit_chi2(v, e):
-    """Errore aggiuntivo s (in quadratura) tale che, fittando i punti con una
-    costante, chi2/ndf = 1. E' la sistematica di drift run-to-run.
-        chi2(s) = sum (v_i - media_pesata(s))^2 / (e_i^2 + s^2),  ndf = N-1
-    Se i punti sono gia' compatibili (chi2/ndf <= 1) ritorna s = 0."""
+    """Extra error s (in quadrature) such that, fitting the points with a constant,
+    chi2/ndf = 1. This is the run-to-run drift systematic.
+        chi2(s) = sum (v_i - weighted_mean(s))^2 / (e_i^2 + s^2),  ndf = N-1
+    If the points are already compatible (chi2/ndf <= 1) it returns s = 0."""
     v, e = np.asarray(v, float), np.asarray(e, float)
     n = len(v)
     if n < 2 or not np.all(np.isfinite(v)) or not np.all(e > 0):
@@ -268,7 +269,7 @@ def syst_for_unit_chi2(v, e):
 # ================================================== mappe 2D in (pos_eta, pos_phi)
 ETA0, PHI0, HALF, NB2D = 18., 6., 0.6, 200   # griglia 200x200 di 0.006 cristalli (mappe)
 NB2D_SHIFT = 12      # griglia grossa (0.1 cristalli) usata SOLO per lo shift per run:
-                     # con i bin fini ci sarebbe meno di un evento per bin
+                     # with fine bins there would be less than one event per bin
 MAP_RANGE = [[ETA0 - HALF, ETA0 + HALF], [PHI0 - HALF, PHI0 + HALF]]
 NMIN_RUN, NMIN_ALL = 25, 150                 # eventi minimi per bin (griglia grossa)
 NMIN_MAP = 3                                 # eventi minimi per bin (griglia fine)
@@ -276,7 +277,7 @@ PAL_HALF = 0.03      # semi-ampiezza della palette attorno all'energia inclusiva
 
 
 def _map(eta, phi, atot, nb=None):
-    """Occupancy, <A_tot> per bin e errore sulla media per bin."""
+    """Occupancy, <A_tot> per bin and the error on the mean per bin."""
     nb = nb or NB2D
     H, xe, ye = np.histogram2d(eta, phi, bins=nb, range=MAP_RANGE)
     S, _, _ = np.histogram2d(eta, phi, bins=nb, range=MAP_RANGE, weights=atot)
@@ -290,8 +291,8 @@ def _map(eta, phi, atot, nb=None):
 
 def centroid_figure(eta, phi, atot, run, runs, bounds, rows, energy, resistance,
                     outdir, all_eta=None, all_phi=None):
-    """Centroide 2D, mappa di <A_tot> normalizzata per bin, e shift di energia
-    per run a parita' di posizione (occupancy divisa via)."""
+    """2D centroid, per-bin normalised <A_tot> map, and the per-run energy shift at
+    fixed position (with the occupancy divided out)."""
     Hall, Mall, Eall, xe, ye = _map(eta, phi, atot)                 # griglia fine, per le mappe
     Gall, GMall, GEall, _, _ = _map(eta, phi, atot, nb=NB2D_SHIFT)   # griglia grossa, per lo shift
     cen_eta, cen_phi = eta.mean(), phi.mean()
@@ -375,8 +376,8 @@ def centroid_figure(eta, phi, atot, run, runs, bounds, rows, energy, resistance,
     eraw = 100 * epk / p0
     cshift = np.array([c[0] for c in corr], dtype=float)
     ecshift = np.array([c[1] for c in corr], dtype=float)
-    # entrambe le serie riferite alla propria media: cosi' i due effetti si
-    # confrontano direttamente, senza offset di normalizzazione
+    # both series referred to their own mean, so that the two effects can be
+    # compared directly, with no normalisation offset
     if np.isfinite(cshift).any():
         cshift = cshift - np.nanmean(cshift)
     ax.errorbar(xs, raw, yerr=eraw, fmt="o", color="C0", capsize=3,
@@ -408,16 +409,16 @@ FIT_HALF = 0.3       # intervallo su cui si fitta la parabola
 
 
 def _parab(x, p0, p1, p2):
-    """Parabola nella stessa parametrizzazione del fit ROOT:
-    p0 = posizione del vertice, p1 = valore al massimo, p2 = curvatura."""
+    """Parabola in the same parametrisation as the ROOT fit:
+    p0 = vertex position, p1 = value at the maximum, p2 = curvature."""
     return p1 + p2 * (x - p0) ** 2
 
 
 def profilo_centroide(eta, phi, atot, energy, resistance, outdir, ywin=None, amin=None):
-    """<A_tot> vs (pos_eta - 18) con |pos_phi - 6| < 0.2, e viceversa.
-    Profilo con punti ed errore sulla media, zoomato attorno al massimo, con una
-    parabola sovrapposta (p0 = vertice, p1 = massimo, p2 = curvatura).
-    Nessun fit a costante."""
+    """<A_tot> vs (pos_eta - 18) with |pos_phi - 6| < 0.2, and vice versa.
+    Profile with points and error on the mean, zoomed around the maximum, with a
+    parabola overlaid (p0 = vertex, p1 = maximum, p2 = curvature).
+    No constant fit."""
     nb = int(2 * PROF_HALF / PROF_BIN)
     fig, axs = plt.subplots(1, 2, figsize=(16, 6.4))
     res = []
@@ -482,10 +483,10 @@ def profilo_centroide(eta, phi, atot, energy, resistance, outdir, ywin=None, ami
 
 
 def scatter_centroide(eta, phi, atot, energy, resistance, outdir, ywin=None, amin=None):
-    """A_tot vs (pos_eta - 18) con |pos_phi - 6| < 0.2, e viceversa.
-    TUTTI gli eventi, nessuna media e nessun fit: istogramma 2D con scala di
-    colore logaritmica. Le righe orizzontali segnano la soglia effettiva e la
-    finestra in y; quelle verticali il +-0.2 in posizione."""
+    """A_tot vs (pos_eta - 18) with |pos_phi - 6| < 0.2, and vice versa.
+    ALL events, no averaging and no fit: a 2D histogram with a logarithmic colour
+    scale. The horizontal lines mark the effective threshold and the window in y;
+    the vertical ones the +-0.2 in position."""
     nb = int(2 * PROF_HALF / PROF_BIN)
     nom = SCALE[resistance] * energy
     fig, axs2 = plt.subplots(2, 2, figsize=(16, 12))
@@ -521,8 +522,8 @@ def scatter_centroide(eta, phi, atot, energy, resistance, outdir, ywin=None, ami
 
 
 def profilo_perrun(eta, phi, atot, runs, bounds, energy, resistance, outdir, ywin):
-    """Lo stesso profilo, ma una curva per run, normalizzata alla propria costante:
-    serve a vedere se la FORMA della risposta cambia da run a run."""
+    """The same profile, but one curve per run, each normalised to its own constant:
+    this shows whether the SHAPE of the response changes from run to run."""
     nb = int(2 * PROF_HALF / PROF_BIN)
     cmap = plt.get_cmap("viridis")
     fig, axs = plt.subplots(1, 2, figsize=(16, 6.4))
@@ -567,12 +568,12 @@ def profilo_perrun(eta, phi, atot, runs, bounds, energy, resistance, outdir, ywi
 
 def mappe_perrun(eta, phi, atot, runs, bounds, energy, resistance, outdir, all_eta=None,
                  all_phi=None, all_run=None, all_bounds=None):
-    """Per ogni run, le stesse due mappe della figura del centroide:
-    occupancy (tutti gli eventi) e <A_tot> per bin (sopra soglia)."""
+    """For each run, the same two maps as in the centroid figure:
+    occupancy (all events) and <A_tot> per bin (above threshold)."""
     ncol = min(4, len(runs))
     nrow = int(np.ceil(len(runs) / ncol))
 
-    # --- occupancy per run, su TUTTI gli eventi
+    # --- occupancy per run, over ALL events
     if all_eta is not None and all_bounds is not None:
         fig, axes = plt.subplots(nrow, ncol, figsize=(4.1 * ncol, 3.5 * nrow), squeeze=False)
         for ax, i, r in zip(axes.ravel(), range(len(runs)), runs):
@@ -604,7 +605,7 @@ def mappe_perrun(eta, phi, atot, runs, bounds, energy, resistance, outdir, all_e
                     f"mappe2D_perrun_occupancy_{energy}GeV_{resistance}ohm.png"), dpi=130)
         plt.close(fig)
 
-    # --- <A_tot> per bin, per run, con la stessa scala di colore per tutti
+    # --- <A_tot> per bin, per run, with the same colour scale for all
     maps = []
     for i in range(len(runs)):
         sl = slice(bounds[i], bounds[i + 1])
@@ -634,16 +635,18 @@ def mappe_perrun(eta, phi, atot, runs, bounds, energy, resistance, outdir, all_e
 
 
 # ----------------------------------------------------------------- analisi
-def analyse(path, energy, resistance, outdir, chunk_profile, drop_runs=()):
+def analyse(path, energy, resistance, outdir, chunk_profile, drop_runs=(), only_runs=()):
     tree = uproot.open(path)["h4_reco"]
     arr = tree.arrays(["run", "spill", "evt", "A_tot", "pos_eta", "pos_phi"], library="np")
-    if drop_runs:
+    if drop_runs or only_runs:
         keep_run = ~np.isin(arr["run"], list(drop_runs))
+        if only_runs:
+            keep_run &= np.isin(arr["run"], list(only_runs))
         if keep_run.sum() < len(keep_run):
             print(f"       scartati {len(keep_run)-keep_run.sum()} eventi dei run "
                   f"{sorted(set(arr['run'][~keep_run]))}", flush=True)
         arr = {k: v[keep_run] for k, v in arr.items()}
-    # ordine cronologico su TUTTI gli eventi (serve per le mappe 2D)
+    # chronological order over ALL events (needed for the 2D maps)
     o_all = np.lexsort((arr["evt"], arr["spill"], arr["run"]))
     amin = a_tot_min(energy, resistance)
     sig = ((arr["A_tot"][o_all] > amin)
@@ -654,7 +657,7 @@ def analyse(path, energy, resistance, outdir, chunk_profile, drop_runs=()):
     m_phi = arr["pos_phi"][o_all][sig]
     m_atot = arr["A_tot"][o_all][sig]
 
-    # stessi eventi ma SENZA la soglia su A_tot: per l'occupancy e per i plot 1D
+    # same events but WITHOUT the A_tot threshold: for the occupancy and the 1D plots
     inbox = ((np.abs(arr["pos_eta"][o_all] - ETA0) < HALF)
              & (np.abs(arr["pos_phi"][o_all] - PHI0) < HALF))
     b_eta = arr["pos_eta"][o_all][inbox]
@@ -857,7 +860,7 @@ def analyse(path, energy, resistance, outdir, chunk_profile, drop_runs=()):
 
 
 def summary_plot(per_energy, syst, resistance, outdir):
-    """Quanto e' grande il drift run-to-run, energia per energia."""
+    """How large the run-to-run drift is, energy by energy."""
     es_all, relsig = [], []
     es_multi, spread, nrun = [], [], []
     es_single = []
@@ -928,9 +931,11 @@ def main():
                    help="rifa' solo queste energie; le altre vengono lette dalla cache")
     p.add_argument("--exclude-runs", nargs="*", type=int, default=[],
                    help="run da scartare, es. 20592 (energia sbagliata)")
+    runsets.add_argument(p)
     p.add_argument("--only-collect", action="store_true",
                    help="non rifa' nessun fit: assembla CSV e sommario dalla cache")
     a = p.parse_args()
+    drop, only = runsets.resolve(a.runset, a.exclude_runs)
 
     load_timestamps(a.timestamps or os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                  "timestamps_runs.txt"))
@@ -948,9 +953,9 @@ def main():
         cache_dir = os.path.join(out, "_cache")
         os.makedirs(cache_dir, exist_ok=True)
 
-        # I fit per energia sono la parte lenta. Ogni energia viene salvata in cache
-        # appena finita, cosi' il lavoro si puo' spezzare in piu' lanci (--energies)
-        # e assemblare alla fine (--only-collect) senza rifare niente.
+        # The per-energy fits are the slow part. Each energy is cached as soon as it
+        # is done, so the work can be split over several runs of the script
+        # (--energies) and assembled at the end (--only-collect) with nothing redone.
         for f in files:
             m = re.match(r"^(\d+)_", os.path.basename(f))
             if not m:
@@ -962,7 +967,7 @@ def main():
             if a.energies is not None and E not in a.energies:
                 continue
             print(f"  {E:4d} GeV  {os.path.basename(f)}", flush=True)
-            rows, ref, prof = analyse(f, E, R, out, a.chunk_profile, a.exclude_runs)
+            rows, ref, prof = analyse(f, E, R, out, a.chunk_profile, drop, only)
             slim = None if ref is None else {k: float(ref[k]) for k in
                                              ("peak", "err_peak", "sigma", "err_sigma")}
             if slim is not None:

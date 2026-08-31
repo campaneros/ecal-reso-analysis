@@ -1,25 +1,26 @@
 // ---------------------------------------------------------------------------
 //  fit_fixedSC.C
 //
-//  Curva di risoluzione  sigma/E = N/E (+) S/sqrt(E) (+) C  con S e C FISSATI
-//  ai valori misurati a 340 ohm, che e' la resistenza con piu' punti e col fit
-//  meglio condizionato. S e C sono proprieta' del cristallo e della geometria;
-//  la resistenza CATIA cambia il guadagno, cioe' N. Se e' cosi', a 400 e 500 ohm
-//  deve bastare N libero.
+//  Resolution curve  sigma/E = N/E (+) S/sqrt(E) (+) C  with S and C FIXED at the
+//  values measured at 340 ohm, which is the resistance with the most points and the
+//  best conditioned fit. S and C are properties of the crystal and of the geometry;
+//  the CATIA resistance changes the gain, that is N. If that holds, N alone should
+//  be enough as a free parameter at 400 and 500 ohm.
 //
-//  Legge plot/root/points_resolution.csv, prodotto da plot/fit_fixedSC.py:
+//  Reads plot/root/points_resolution.csv, produced by plot/fit_fixedSC.py:
 //      dataset,resistance,energy_nom,energy_true,sigma_over_E_pct,err_pct
-//  dataset = runmean  media delle sigma per run
-//            corr     come sopra ma con la risposta corretta evento per evento
-//                     in (pos_eta, pos_phi), vedi plot/uniformita_pos.py
+//  dataset = runmean  mean of the per-run sigmas
+//            corr     as above but with the response corrected event by event in
+//                     (pos_eta, pos_phi), see plot/uniformita_pos.py
 //
-//  Scrive plot/root/resolution_fixedSC.root con, per ogni dataset e resistenza,
-//  il TGraphErrors dei punti, la TF1 del fit libero, la TF1 del fit con S e C
-//  congelati, e un TCanvas per dataset. In piu' un TTree `summary` coi parametri.
+//  Writes plot/root/resolution_fixedSC.root containing, for each dataset and
+//  resistance, the TGraphErrors of the points, the TF1 of the free fit, the TF1 of
+//  the fit with S and C frozen, and one TCanvas per dataset. Plus a `summary` TTree
+//  with the parameters.
 //
-//  Uso, dalla radice del repo:
+//  Usage, from the repository root:
 //      root -l -b -q plot/root/fit_fixedSC.C
-//      root -l -b -q 'plot/root/fit_fixedSC.C("altro.csv","altro.root")'
+//      root -l -b -q 'plot/root/fit_fixedSC.C("other.csv","other.root")'
 // ---------------------------------------------------------------------------
 
 #include <TGraphErrors.h>
@@ -45,8 +46,8 @@
 #include <cstdlib>
 #include <iostream>
 
-// sigma/E in PERCENTO. N in GeV, S e C in percento: stessa convenzione di
-// fit_plot.sh e di resolution_final.py.
+// sigma/E in PERCENT. N in GeV, S and C in percent: same convention as
+// fit_plot.sh and resolution_final.py.
 double resoFun(double *x, double *p)
 {
    double E = x[0];
@@ -65,15 +66,15 @@ void fit_fixedSC(const char *csvname = "plot/root/points_resolution.csv",
    gStyle->SetOptStat(0);
    gStyle->SetOptFit(0);
 
-   // ------------------------------------------------------------ lettura CSV
+   // ------------------------------------------------------------ CSV reading
    std::ifstream in(csvname);
    if (!in.is_open()) {
-      std::cout << "non riesco ad aprire " << csvname << std::endl;
+      std::cout << "cannot open " << csvname << std::endl;
       return;
    }
    std::map<std::string, Points> data;
    std::string line;
-   std::getline(in, line);                       // intestazione
+   std::getline(in, line);                       // header
    while (std::getline(in, line)) {
       if (line.empty()) continue;
       std::stringstream ss(line);
@@ -94,23 +95,23 @@ void fit_fixedSC(const char *csvname = "plot/root/points_resolution.csv",
    }
    in.close();
    if (data.empty()) {
-      std::cout << "nessun punto letto da " << csvname << std::endl;
+      std::cout << "no points read from " << csvname << std::endl;
       return;
    }
 
    TFile *fout = TFile::Open(outname, "RECREATE");
    if (fout == 0 || fout->IsZombie()) {
-      std::cout << "non riesco a creare " << outname << std::endl;
+      std::cout << "cannot create " << outname << std::endl;
       return;
    }
 
    // -------------------------------------------------------------- TTree
    int    t_dataset = 0;     // 0 = runmean, 1 = corr
    int    t_R = 0;
-   int    t_mode = 0;        // 0 = free, 1 = S e C congelati a 340 ohm
+   int    t_mode = 0;        // 0 = free, 1 = S and C frozen at 340 ohm
    int    t_ndf = 0, t_npoints = 0;
    double t_N = 0, t_eN = 0, t_S = 0, t_eS = 0, t_C = 0, t_eC = 0, t_chi2 = 0;
-   TTree *tree = new TTree("summary", "risultati del fit N/E (+) S/sqrt(E) (+) C");
+   TTree *tree = new TTree("summary", "results of the N/E (+) S/sqrt(E) (+) C fit");
    tree->Branch("dataset", &t_dataset, "dataset/I");
    tree->Branch("resistance", &t_R, "resistance/I");
    tree->Branch("mode", &t_mode, "mode/I");
@@ -136,10 +137,10 @@ void fit_fixedSC(const char *csvname = "plot/root/points_resolution.csv",
 
    for (int id = 0; id < nds; ++id) {
 
-      // ---- 340 ohm libero: da qui escono S0 e C0
+      // ---- 340 ohm free: this is where S0 and C0 come from
       std::string k340 = std::string(dsname[id]) + "_340";
       if (data.find(k340) == data.end()) {
-         std::cout << "manca " << k340 << ", salto il dataset" << std::endl;
+         std::cout << k340 << " missing, skipping the dataset" << std::endl;
          continue;
       }
       Points &p340 = data[k340];
@@ -180,7 +181,7 @@ void fit_fixedSC(const char *csvname = "plot/root/points_resolution.csv",
          g->SetMarkerColor(colr[ir]);
          g->SetLineColor(colr[ir]);
 
-         // ---- fit libero
+         // ---- free fit
          TF1 *ffree = new TF1(Form("f_%s_%d_free", dsname[id], R), resoFun,
                               0.9 * xmin, 1.05 * xmax, 3);
          ffree->SetParNames("N_GeV", "S_pct", "C_pct");
@@ -193,8 +194,8 @@ void fit_fixedSC(const char *csvname = "plot/root/points_resolution.csv",
          ffree->SetLineWidth(2);
          g->Fit(ffree, "RQ0");
 
-         // ---- fit con S e C congelati ai valori di 340 ohm.
-         // A 340 ohm non ha senso: S0 e C0 vengono da li'. Quindi solo 400 e 500.
+         // ---- fit with S and C frozen at the 340 ohm values.
+         // At 340 ohm it makes no sense: S0 and C0 come from there. So 400 and 500 only.
          bool doFix = (R != 340);
          TF1 *ffix = new TF1(Form("f_%s_%d_fixedSC", dsname[id], R), resoFun,
                              0.9 * xmin, 1.05 * xmax, 3);
@@ -207,7 +208,7 @@ void fit_fixedSC(const char *csvname = "plot/root/points_resolution.csv",
          ffix->SetLineWidth(3);
          if (doFix) g->Fit(ffix, "RQ0");
 
-         // ---- disegno
+         // ---- drawing
          c->cd(ir + 1);
          gPad->SetLogx();
          gPad->SetGridx();
@@ -244,7 +245,7 @@ void fit_fixedSC(const char *csvname = "plot/root/points_resolution.csv",
          }
          pt->Draw();
 
-         // ---- salvataggio e stampa
+         // ---- writing and printing
          fout->cd();
          g->Write();
          ffree->Write();
@@ -279,5 +280,5 @@ void fit_fixedSC(const char *csvname = "plot/root/points_resolution.csv",
    fout->cd();
    tree->Write();
    fout->Close();
-   std::cout << std::endl << "scritto " << outname << std::endl;
+   std::cout << std::endl << "written " << outname << std::endl;
 }

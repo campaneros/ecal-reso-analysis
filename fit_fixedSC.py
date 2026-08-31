@@ -1,26 +1,27 @@
 """
-Fit N/E (+) S/sqrt(E) (+) C con S e C FISSATI ai valori misurati a 340 ohm.
+Fit of N/E (+) S/sqrt(E) (+) C with S and C FIXED at the values measured at 340 ohm.
 
-Idea: 340 ohm e' la resistenza con piu' punti (12 energie, da 20 a 250 GeV) e con
-il fit meglio condizionato. S e C sono proprieta' del cristallo e della geometria,
-non della catena di lettura; la resistenza CATIA cambia il guadagno e quindi il
-rumore, cioe' N. Se e' vero, a 400 e 500 ohm deve bastare N come parametro libero.
+Idea: 340 ohm is the resistance with the most points (12 energies, from 20 to
+250 GeV) and the best conditioned fit. S and C are properties of the crystal and of
+the geometry, not of the readout chain; the CATIA resistance changes the gain and
+therefore the noise, that is N. If that is true, N alone should be enough as a free
+parameter at 400 and 500 ohm.
 
-Due insiemi di punti:
-  runmean  media delle sigma per run, plot/resolution_final_runmean.csv
-           errore = stat (+) sistematica di drift
-  corr     come sopra ma con la risposta corretta evento per evento,
+Two sets of points:
+  runmean  mean of the per-run sigmas, plot/resolution_final_runmean.csv
+           error = stat (+) drift systematic
+  corr     as above but with the response corrected event by event,
            plot/resolution_final_unif.csv
-           errore = stat (+) drift (+) sistematica di non-uniformita'
+           error = stat (+) drift (+) non-uniformity systematic
 
-Per ogni insieme: 340 ohm libero (N, S, C), poi 400 e 500 con S e C congelati ai
-valori appena trovati a 340 e il solo N libero.
+For each set: 340 ohm free (N, S, C), then 400 and 500 with S and C frozen at the
+values just found at 340 and N as the only free parameter.
 
-Scrive plot/root/points_resolution.csv, che la macro plot/root/fit_fixedSC.C legge
-per rifare gli stessi fit in ROOT e salvare TGraphErrors, TF1 e TCanvas in un file
-.root versionabile.
+Writes plot/root/points_resolution.csv, which the macro plot/root/fit_fixedSC.C
+reads to repeat the same fits in ROOT and store TGraphErrors, TF1 and TCanvas in a
+versionable .root file.
 
-Uso: python3 plot/fit_fixedSC.py --plotdir plot --outdir plot/root
+Usage: python3 plot/fit_fixedSC.py --plotdir plot --outdir plot/root
 """
 import argparse, csv, os
 import numpy as np
@@ -75,7 +76,7 @@ def main():
                      ["err_stat_pct", "err_drift_pct", "err_unif_pct"]),
     }
 
-    # ------------------------------------------------------- CSV per la macro ROOT
+    # ------------------------------------------------------- CSV for the ROOT macro
     pts = os.path.join(a.outdir, "points_resolution.csv")
     with open(pts, "w") as fh:
         fh.write("dataset,resistance,energy_nom,energy_true,sigma_over_E_pct,err_pct\n")

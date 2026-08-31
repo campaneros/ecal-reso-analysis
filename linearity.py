@@ -28,9 +28,9 @@ import matplotlib.pyplot as plt
 
 COL = {340: "C0", 400: "C1", 500: "C2"}
 
-# Energia VERA del fascio (colonna "Final Energy" di beamfiles/CMS_ECAL_energies_June26.xlsx)
-# contro l'impostazione nominale. Sopra i 100 GeV la differenza arriva al 5%, ed e'
-# la ragione per cui usando le energie nominali il fit sembrava non lineare.
+# TRUE beam energy ("Final Energy" column of beamfiles/CMS_ECAL_energies_June26.xlsx)
+# against the nominal setting. Above 100 GeV the difference reaches 5%, and it is the
+# reason why the fit looked non-linear when the nominal energies were used.
 E_TRUE = {20: 20.00, 30: 30.00, 40: 39.99, 50: 49.98, 60: 59.97, 80: 79.90,
           100: 99.75, 120: 119.48, 150: 148.73, 175: 172.67, 200: 196.08,
           225: 218.82, 250: 240.76, 275: 261.77, 300: 281.74}
@@ -88,7 +88,7 @@ def main():
             continue
         data[R] = got
 
-    # ---------------------------------------------------- per energia
+    # ---------------------------------------------------- per energy
     fig, axs = plt.subplots(2, len(data), figsize=(6.2 * len(data), 8.6),
                             sharex="col", gridspec_kw=dict(height_ratios=[2, 1]))
     if len(data) == 1:
@@ -168,9 +168,9 @@ def main():
         ax.set_ylabel("double-CB peak per run  [ADC]")
         ax.set_title(f"{R} $\\Omega$,  $N_{{run}} = {len(E)}$", fontsize=11)
         ax.grid(alpha=.3)
-        # scarto dalla MEDIA DELLA PROPRIA ENERGIA: toglie la non-linearita'
-        # e lascia solo la dispersione run-to-run, che e' quello che serve per
-        # riconoscere un run fuori posto.
+        # deviation from the MEAN OF ITS OWN ENERGY: this removes the non-linearity
+        # and leaves only the run-to-run spread, which is what is needed to spot a
+        # run that is out of place.
         runs = np.array([r[1] for r in per_run])
         dev = np.zeros_like(y)
         for e in np.unique(E):
@@ -203,7 +203,7 @@ def main():
         for r in rowsout:
             fh.write(f"{r[0]},{r[1]},{r[2]},{r[3]:.4f},{r[4]:.4f},{r[5]:+.4f},"
                      f"{r[6]:.4f},{r[7]}\n")
-    # ------------------------------- retta di riferimento dai soli punti a bassa E
+    # ------------------------------- reference line from the low-E points only
     fig, axs = plt.subplots(2, 1, figsize=(9, 9), sharex=True,
                             gridspec_kw=dict(height_ratios=[1, 1]))
     ax, ax2 = axs

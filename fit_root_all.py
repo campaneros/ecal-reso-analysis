@@ -1,23 +1,24 @@
 """
-Prepara i punti per i fit in ROOT e rifa' gli stessi fit in Python come riscontro.
+Prepares the points for the ROOT fits and repeats the same fits in Python as a
+cross-check.
 
-Quattro fit, due per ciascuno dei due insiemi di punti:
+Four fits, two for each of the two sets of points:
 
-  insiemi   nopos   (sigma/E)^2 = (sigma/mu)^2 - BES^2 - sincrotrone^2
-            pos     come sopra, meno anche POS_eff^2, la sistematica sul centroide
-                    (vedi plot/uniformita_pos.py e plot/note/mattermost_uniformita.md)
+  sets      nopos   (sigma/E)^2 = (sigma/mu)^2 - BES^2 - synchrotron^2
+            pos     as above, minus POS_eff^2 as well, the centroid systematic
+                    (see plot/uniformita_pos.py)
 
-  fit       indep   N, S, C liberi per ciascuna resistenza. A 500 ohm C e' fissato
-                    a 0.300 %: i dati arrivano solo a 150 GeV e non lo vincolano
-            common  S e C comuni alle tre resistenze, N libero per resistenza
+  fits      indep   N, S, C free for each resistance. At 500 ohm C is fixed to
+                    0.300 %: the data only reach 150 GeV and do not constrain it
+            common  S and C common to the three resistances, N free per resistance
 
-In entrambi i casi l'errore e' stat (+) drift: la non-uniformita' e' una correzione,
-non una barra, quindi non entra negli errori.
+In both cases the error is stat (+) drift: the non-uniformity is a correction, not
+an error bar, so it does not enter the uncertainties.
 
-Scrive plot/root/points.csv, che la macro plot/root/fit_resolution.C legge per
-rifare gli stessi fit e salvare TGraphErrors, TF1 e TCanvas in un file .root.
+Writes plot/root/points.csv, which the macro plot/root/fit_resolution.C reads to
+repeat the same fits and store TGraphErrors, TF1 and TCanvas in a .root file.
 
-Uso: python3 plot/fit_root_all.py --plotdir plot --outdir plot/root
+Usage: python3 plot/fit_root_all.py --plotdir plot --outdir plot/root
 """
 import argparse, csv, os
 import numpy as np

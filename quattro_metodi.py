@@ -1,16 +1,17 @@
 """
-Quattro modi di ricavare sigma/E da un file merged che contiene piu' run, messi
-a confronto sullo stesso plot.
+Four ways of extracting sigma/E from a merged file containing several runs,
+compared on the same plot.
 
-  global   fit DCB unico su tutti gli eventi del file, come fa fit.sh
-  runmean  fit DCB per run, poi media di sigma_i/picco_i pesata sugli eventi
-  norm     ogni evento riscalato per (picco_rif / picco del suo run), poi un fit
-           unico: toglie gli sfasamenti di scala fra run e tiene tutta la statistica
-  pop      i run vengono divisi in popolazioni separando sul salto piu' grande fra
-           i picchi (se supera SPLIT_MIN); ogni popolazione ha il suo fit, e il
-           valore riportato e' la media pesata
+  global   single DCB fit over all the events of the file, as fit.sh does
+  runmean  DCB fit per run, then the mean of sigma_i / peak_i weighted by events
+  norm     every event rescaled by (reference peak / peak of its own run), then a
+           single fit: this removes the scale offsets between runs and keeps all
+           the statistics
+  pop      the runs are split into populations by cutting at the largest gap
+           between peaks (if it exceeds SPLIT_MIN); each population gets its own
+           fit, and the reported value is the weighted mean
 
-Uso:
+Usage:
   python3 quattro_metodi.py --base . --outdir plot/metodi --besdir plot/bes \
       [--resistances 340] [--exclude-runs 20592]
 """
@@ -21,6 +22,7 @@ import uproot
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import runsets
 from iminuit import Minuit
 from iminuit.cost import LeastSquares
 
@@ -90,8 +92,8 @@ def fd_binwidth(v):
 
 
 def mode_window(v, energy, resistance):
-    """Ripiego per i run in cui il picco non cade nella finestra di fit.sh
-    (es. 340 ohm 275 GeV, popolazione bassa a 5996 ADC con finestra da 6095)."""
+    """Fallback for the runs whose peak does not fall inside the fit.sh window
+    (e.g. 340 ohm 275 GeV, low population at 5996 ADC with a window starting at 6095)."""
     nom = SCALE[resistance]*energy
     x = v[(v > 0.5*nom) & (v < 1.3*nom)]
     if len(x) < 100:
@@ -112,8 +114,8 @@ def _win_ok(w, v):
 
 
 def fit_dcb(v, energy, resistance):
-    """Fit DCB con finestra di fit.sh e binning Freedman-Diaconis; se la finestra
-    non contiene il picco si ripiega su una centrata sulla moda."""
+    """DCB fit with the fit.sh window and Freedman-Diaconis binning; if the window does
+    not contain the peak it falls back to one centred on the mode."""
     w = fit_window(v, energy, resistance)
     if not _win_ok(w, v):
         w = mode_window(v, energy, resistance)
@@ -158,14 +160,14 @@ def fit_dcb(v, energy, resistance):
 
 
 def rel(r):
-    """sigma/mu in % e il suo errore."""
+    """sigma/mu in % and its error."""
     v = 100*r["sigma"]/r["peak"]
     e = v*math.sqrt((r["err_sigma"]/r["sigma"])**2 + (r["err_peak"]/r["peak"])**2)
     return v, e
 
 
 def split_pop(peaks, ns):
-    """Divide i run sul salto relativo piu' grande fra picchi consecutivi."""
+    """Splits the runs at the largest relative gap between consecutive peaks."""
     o = np.argsort(peaks)
     p = np.array(peaks)[o]
     if len(p) < 2:
@@ -182,13 +184,15 @@ MCOL = {"global": "k", "runmean": "C0", "norm": "C3", "pop": "C2"}
 MMK = {"global": "o", "runmean": "s", "norm": "^", "pop": "v"}
 
 
-def analyse(path, energy, resistance, drop):
+def analyse(path, energy, resistance, drop, only=()):
     t = uproot.open(path)["h4_reco"]
     arr = t.arrays(["run", "A_tot", "pos_eta", "pos_phi"], library="np")
     k = ((np.abs(arr["pos_eta"]-ETA0) <= SEL) & (np.abs(arr["pos_phi"]-PHI0) <= SEL)
          & (arr["A_tot"] > A_TOT_MIN))
     if drop:
         k &= ~np.isin(arr["run"], drop)
+    if len(only):
+        k &= np.isin(arr["run"], only)
     run, at = arr["run"][k], arr["A_tot"][k]
     if len(at) < 500:
         return None
@@ -217,7 +221,7 @@ def analyse(path, energy, resistance, drop):
     out["runmean"] = (float((x*w).sum()/w.sum()),
                       float(np.sqrt((w**2*ex**2).sum())/w.sum()))
 
-    # ---- norm: ogni evento riscalato al picco di riferimento
+    # ---- norm: every event rescaled to the reference peak
     pref = float((np.array([p["peak"] for p in ok])*w).sum()/w.sum())
     scaled = at.astype(float).copy()
     for p in ok:
@@ -284,8 +288,10 @@ def main():
     ap.add_argument("--resistances", nargs="+", type=int, default=[340, 400, 500])
     ap.add_argument("--energies", nargs="*", type=int, default=None)
     ap.add_argument("--exclude-runs", nargs="*", type=int, default=[])
+    runsets.add_argument(ap)
     ap.add_argument("--only-collect", action="store_true")
     a = ap.parse_args()
+    drop, only = runsets.resolve(a.runset, a.exclude_runs)
     os.makedirs(a.outdir, exist_ok=True)
     cache = os.path.join(a.outdir, "_cache"); os.makedirs(cache, exist_ok=True)
 
@@ -299,7 +305,7 @@ def main():
             if a.only_collect or (a.energies is not None and E not in a.energies):
                 continue
             print(f"  {R} ohm {E:4d} GeV", flush=True)
-            res = analyse(f, E, R, a.exclude_runs)
+            res = analyse(f, E, R, drop, only)
             if res is None:
                 print("      salto"); continue
             json.dump(res, open(cf, "w"), default=float)

@@ -1,8 +1,8 @@
-# Solo sorgenti. Tutto il resto -- dati, plot, cache, note -- resta fuori.
+# Sources only. Everything else -- data, plots, caches, notes -- stays out.
 #
-# La regola e': ignora tutto, poi riammetti esplicitamente le estensioni di
-# codice. Il "!*/" serve a lasciare che git scenda nelle sottocartelle: senza,
-# una directory ignorata viene saltata e i file dentro non vengono mai visti.
+# The rule is: ignore everything, then explicitly re-admit the source-code
+# extensions. The "!*/" line lets git descend into subdirectories: without it an
+# ignored directory is skipped and the files inside are never seen.
 
 *
 !*/
@@ -11,7 +11,7 @@
 # Python
 !*.py
 
-# C / C++ e macro ROOT
+# C / C++ and ROOT macros
 !*.C
 !*.c
 !*.h
@@ -24,15 +24,44 @@
 !*.sh
 !*.bash
 
-# DANTE (framework di ricostruzione, codice di terzi) non deve mai entrare:
-# la regola vale anche se un giorno la cartella venisse copiata qui dentro.
+# DANTE (reconstruction framework, third-party code) must never be included:
+# this rule holds even if the directory is ever copied in here.
 DANTE/
 **/DANTE/
 
-# Cache dell'interprete
+# Interpreter cache
 __pycache__/
 
-# Restano fuori per costruzione: *.root *.png *.csv *.json *.md *.txt *.log,
-# le cache (_cache/ _mom/ _apply/ _rows/) e qualunque output.
-# Per pubblicare anche la documentazione, togliere il commento:
-# !README.md
+# ------------------------------------------------------------------------------
+# Studies that were attempted and then dropped, or redone properly elsewhere.
+# They are not part of the final analysis and stay out of the repository.
+
+# superseded by profili_pernorm.py, which normalises to the peak of each run:
+# without that normalisation the profiles of energies with several runs mix the
+# response populations and the parabola comes out with the wrong curvature sign
+parabole_all_energies.py
+diagnosi_profilo_150.py
+
+# reweighting to flat illumination: it does not remove the position term, and
+# the result is now the 'flat' column of uniformita_pos.py
+reweight_flat_2d.py
+run_reweight_all.sh
+
+# preliminary studies on the symmetry and shape of the response, superseded
+channels_vs_centroid.py
+channels_vs_hodoscope.py
+shape_origin.py
+symmetry_per_run.py
+symmetry_point.py
+response_symmetry_hodo.py
+
+# ROOT against Python cross-check: never run
+confronta_root_python.py
+crosscheck_root.C
+crosscheck_root.sh
+
+# ------------------------------------------------------------------------------
+# Left out by construction: *.root *.png *.csv *.json *.txt *.log, the caches
+# (_cache/ _mom/ _apply/ _rows/) and any output.
+# Repository documentation
+!README.md

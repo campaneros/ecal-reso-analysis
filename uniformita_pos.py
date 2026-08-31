@@ -1,43 +1,45 @@
 """
-Non-uniformita' della risposta in (pos_eta, pos_phi): tre trattamenti a confronto.
+Response non-uniformity in (pos_eta, pos_phi): four treatments compared.
 
-La risposta A_tot(eta, phi) dentro la finestra di selezione non e' piatta: e' una
-superficie con curvatura negativa in entrambe le coordinate (parabole_all_energies).
-Il fascio la illumina in modo non uniforme e diverso da run a run, quindi una parte
-della larghezza misurata viene dalla posizione e non dal calorimetro.
+The response A_tot(eta, phi) inside the selection window is not flat: it is a
+surface with negative curvature in both coordinates, more pronounced in eta than in
+phi, and the curvature decreases with energy. It is measured by profili_pernorm.py,
+which writes c/a in % per crystal^2 for every (resistance, energy).
+The beam illuminates it non-uniformly, and differently from run to run, so part of
+the measured width comes from the impact position and not from the calorimeter.
 
-Attenzione: rendere PIATTA l'illuminazione non toglie il termine. Con illuminazione
-uniforme su |u| <= 0.2 e curvatura relativa c, lo sparpagliamento residuo del fattore
-di risposta vale c * std(u^2) = c * 0.0119, cioe' ~0.12% in eta e ~0.07% in phi con
-le curvature misurate. Il ripesamento a piatto standardizza il riferimento, non
-corregge. Per togliere il termine va corretto l'evento.
+Note: making the illumination FLAT does not remove the term. With uniform
+illumination over |u| <= 0.2 and relative curvature c, the residual spread of the
+response factor is c * std(u^2) = c * 0.0119. Flat reweighting standardises the
+reference, it does not correct. To remove the term the event has to be corrected.
 
-Trattamenti (tutti in catena runmean: fit DCB per run, media di sigma_i/picco_i
-pesata sugli eventi):
+Treatments (all in the runmean chain: DCB fit per run, then the mean of
+sigma_i / peak_i weighted by the number of events):
 
-  raw    nessun trattamento, riferimento
-  corr   A -> A * <f>_run / f(u_i, v_i), correzione evento per evento con la
-         superficie di risposta. Toglie il termine e non perde statistica.
-  pos    nessuna correzione al fit; si sottrae in quadratura, per run,
-         POS_r = 100 * std(f_i)/mean(f_i) sugli eventi di quel run:
+  raw    no treatment, reference
+  corr   A -> A * <f>_run / f(u_i, v_i), event-by-event correction with the response
+         surface. Removes the term and loses no statistics.
+  pos    no correction to the fit; the term is subtracted in quadrature, per run,
+         with POS_r = 100 * std(f_i)/mean(f_i) over the events of that run:
          sigma_corr = sqrt((sigma/mu)^2 - POS^2)
-  flat   ripesamento a illuminazione piatta, w ∝ 1/occupancy su griglia
-         --grid x --grid, fit DCB pesato per run
+  flat   reweighting to flat illumination, w proportional to 1/occupancy on a
+         --grid x --grid mesh, weighted DCB fit per run
 
-Superficie di risposta f: quadratica completa f = a0 + a1 u + a2 v + a3 u^2 +
-a4 v^2 + a5 u v (u = pos_eta - 18, v = pos_phi - 6), minimi quadrati LINEARI sulla
-mappa 2D binnata -> soluzione unica, nessuna degenerazione vertice/curvatura (cfr.
-uno spostamento del vertice si compensa con un cambio di curvatura). Stimata PER
-ENERGIA su eventi normalizzati al picco
-del proprio run, cosi' le doppie popolazioni a 340 ohm non entrano nella mappa.
+Response surface f: full quadratic f = a0 + a1 u + a2 v + a3 u^2 + a4 v^2 + a5 uv
+(u = pos_eta - 18, v = pos_phi - 6), by LINEAR least squares on the binned 2D map ->
+unique solution, no vertex/curvature degeneracy (a shift of the vertex is
+compensated by a change of curvature). Estimated PER ENERGY on events normalised to
+the peak of their own run, so that the two response populations at 340 ohm do not
+enter the map.
 
-Uso:
+Usage:
   python3 plot/uniformita_pos.py --base . --outdir plot/uniformita \
       --resistances 340 --energies 20 30 40 --exclude-runs 20592 ...
   python3 plot/uniformita_pos.py --only-collect --besdir plot/bes
 """
 
 import argparse, os, glob, re, json, math
+import runsets
 import numpy as np
 import uproot
 import matplotlib
@@ -50,9 +52,9 @@ SCALE = {340: 3500/150., 400: 1080/40., 500: 3340/100.}
 NBINS, XLO, XHI = 8000, 0., 8000.
 ETA0, PHI0, SEL = 18., 6., 0.2
 A_TOT_MIN = 100.
-# la mappa e il termine POS si costruiscono sugli stessi eventi che entrano nel fit
-# di sigma, cioe' dentro la finestra di fit.sh del run: usare +-10 sigma gonfia POS
-# (0.196% invece di 0.149% a 340 ohm 40 GeV) perche' le code stanno ai bordi in (u,v).
+# the map and the POS term are built on the same events that enter the sigma fit,
+# i.e. inside the fit.sh window of the run: using +-10 sigma inflates POS, because the
+# tails sit at the edges in (u, v).
 NMIN_BIN = 1              # eventi minimi per bin della mappa
 SYNC_C = 1.92e-7
 
@@ -141,9 +143,9 @@ def fd_binwidth(v, n_eff=None):
 
 
 def fit_dcb(v, energy, resistance, w=None):
-    """Fit DCB, eventualmente pesato. Finestra di fit.sh, binning Freedman-Diaconis
-    calcolato SEMPRE sugli eventi non pesati, cosi' pesato e non pesato hanno lo
-    stesso ndf e sono confrontabili."""
+    """DCB fit, optionally weighted. The fit.sh window, with Freedman-Diaconis binning
+    ALWAYS computed on the unweighted events, so that the weighted and unweighted
+    versions have the same ndf and can be compared."""
     win = fit_window(v, energy, resistance)
     if not _win_ok(win, v):
         win = mode_window(v, energy, resistance)
@@ -200,9 +202,10 @@ def rel(r):
 
 
 def wscatter(vals, wts):
-    """Errore della media pesata dalla VARIANZA PESATA dei valori, non dagli errori
-    dei singoli fit: contiene gia' sia il rumore del fit sia la dispersione da run a
-    run. n_eff = (sum w)^2 / sum w^2. Con un solo run non e' definito -> nan."""
+    """Error on the weighted mean from the WEIGHTED VARIANCE of the values, not from the
+    errors of the individual fits: it already contains both the fit noise and the
+    run-to-run spread. n_eff = (sum w)^2 / sum w^2. With a single run it is
+    undefined -> nan."""
     v = np.asarray(vals, float); w = np.asarray(wts, float)
     g = np.isfinite(v) & (w > 0)
     v, w = v[g], w[g]
@@ -231,15 +234,15 @@ def design(u, v):
 
 
 def fit_surface(u, v, a, ngrid, nmin=NMIN_BIN):
-    """Minimi quadrati lineari di f = a0 + a1 u + a2 v + a3 u^2 + a4 v^2 + a5 uv
-    sulla mappa 2D binnata delle medie. Ritorna (coef, cov, diagnostica).
+    """Linear least squares of f = a0 + a1 u + a2 v + a3 u^2 + a4 v^2 + a5 uv on the
+    binned 2D map of the means. Returns (coef, cov, diagnostics).
 
-    Errore per bin: sigma_pooled / sqrt(N_bin), con sigma_pooled = RMS di a dentro
-    la scatola. NON RMS del singolo bin: con griglie fini (150x150 su +-0.2 sono
-    22500 bin per ~30k eventi, cioe' ~1 evento per bin) l'RMS di bin non e' definito.
-    Lo sparpagliamento di a e' lo stesso ovunque nella scatola a meno di ~0.2%,
-    quindi la stima pooled e' quella giusta, e a bin fine questo fit coincide con la
-    regressione lineare non binnata sui singoli eventi."""
+    Error per bin: sigma_pooled / sqrt(N_bin), with sigma_pooled = RMS of a inside
+    the box. NOT the RMS of the individual bin: with fine meshes (150x150 over +-0.2
+    is 22500 bins for ~30k events, i.e. ~1 event per bin) the per-bin RMS is not
+    defined. The spread of a is the same everywhere in the box to within ~0.2%, so
+    the pooled estimate is the right one, and at fine binning this fit coincides
+    with the unbinned linear regression on the individual events."""
     rng = [[-SEL, SEL], [-SEL, SEL]]
     H, ue, ve = np.histogram2d(u, v, bins=ngrid, range=rng)
     S, _, _ = np.histogram2d(u, v, bins=ngrid, range=rng, weights=a)
@@ -284,13 +287,15 @@ def flat_weights(u, v, ngrid):
 
 
 # ---------------------------------------------------------------- analisi
-def analyse(path, energy, resistance, drop, ngrid, gridflat, nmin=NMIN_BIN):
+def analyse(path, energy, resistance, drop, ngrid, gridflat, nmin=NMIN_BIN, only=()):
     t = uproot.open(path)["h4_reco"]
     arr = t.arrays(["run", "A_tot", "pos_eta", "pos_phi"], library="np")
     k = ((np.abs(arr["pos_eta"]-ETA0) <= SEL) & (np.abs(arr["pos_phi"]-PHI0) <= SEL)
          & (arr["A_tot"] > A_TOT_MIN))
     if drop:
         k &= ~np.isin(arr["run"], drop)
+    if len(only):
+        k &= np.isin(arr["run"], only)
     run = arr["run"][k]
     at = arr["A_tot"][k].astype(float)
     u = arr["pos_eta"][k].astype(float) - ETA0
@@ -323,7 +328,7 @@ def analyse(path, energy, resistance, drop, ngrid, gridflat, nmin=NMIN_BIN):
     coef, cov, sdiag = surf
     fev = surf_eval(coef, u, v)
 
-    # curvatura relativa (a valle della normalizzazione: a0 ~ 1)
+    # relative curvature (after the normalisation: a0 ~ 1)
     a0 = float(coef[0])
     sdiag.update(coef=[float(c) for c in coef],
                  err_coef=[float(np.sqrt(cov[i, i])) for i in range(6)],
@@ -440,8 +445,10 @@ def main():
     ap.add_argument("--nmin", type=int, default=NMIN_BIN,
                     help="eventi minimi per bin della mappa")
     ap.add_argument("--grid-flat", type=int, default=10, help="griglia per i pesi piatti")
+    runsets.add_argument(ap)
     ap.add_argument("--only-collect", action="store_true")
     a = ap.parse_args()
+    drop, only = runsets.resolve(a.runset, a.exclude_runs)
     os.makedirs(a.outdir, exist_ok=True)
     cache = os.path.join(a.outdir, "_cache"); os.makedirs(cache, exist_ok=True)
 
@@ -455,7 +462,7 @@ def main():
                 if a.energies is not None and E not in a.energies:
                     continue
                 print(f"  {R} ohm {E:4d} GeV", flush=True)
-                res = analyse(f, E, R, a.exclude_runs, a.grid, a.grid_flat, a.nmin)
+                res = analyse(f, E, R, drop, a.grid, a.grid_flat, a.nmin, only)
                 if res is None:
                     print("      salto"); continue
                 json.dump(res, open(os.path.join(cache, f"{R}_{E}.json"), "w"), default=float)

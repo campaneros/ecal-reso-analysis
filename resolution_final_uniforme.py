@@ -1,34 +1,34 @@
 #!/usr/bin/env python3
 """
-Curva di risoluzione finale con la non-uniformita' della risposta corretta.
+Final resolution curve with the response non-uniformity corrected.
 
-Copia separata di resolution_final.py: quello NON viene toccato. La differenza e'
-il valore centrale e una sistematica in piu'.
+Separate copy of resolution_final.py: that one is NOT touched. The difference is the
+central value and one extra systematic.
 
-Valore centrale: sigma/E dopo la CORREZIONE EVENTO PER EVENTO della risposta in
-(pos_eta, pos_phi), colonna `corr_corr` di plot/uniformita/uniformita_pos.csv,
-gia' al netto di BES e sincrotrone:
+Central value: sigma/E after the EVENT-BY-EVENT CORRECTION of the response in
+(pos_eta, pos_phi), already net of BES and synchrotron:
 
     (sigma/E)^2 = (sigma_corr/mu_corr)^2 - BES^2 - SYNC^2
 
-dove sigma_corr viene dal fit DCB per run su A -> A * <f>_run / f(u_i, v_i), con
-f la superficie di risposta quadratica stimata per energia (uniformita_pos.py),
-e la media sui run e' pesata sugli eventi.
+where sigma_corr comes from the per-run DCB fit of A -> A * <f>_run / f(u_i, v_i),
+with f the quadratic response surface, and the average over runs is weighted by the
+number of events.
 
-Il drift NON si sottrae: partendo dalla media delle sigma per run non entra.
+Drift is NOT subtracted: starting from the mean of the per-run sigmas it never
+enters.
 
-Barre d'errore, tre pezzi in quadratura:
-  stat    errore del fit, propagato su sigma/mu
-  drift   sistematica run-a-run sulla sigma, syst_sigma_ADC / peak_medio
-          da plot/<R>/sistematica_drift_<R>ohm.csv (come resolution_final.py)
-  unif    |corr - pos|, cioe' l'ambiguita' fra correggere l'evento e sottrarre il
-          termine in quadratura. Non e' un errore statistico: e' quanto il
-          risultato dipende da come si tratta la non-uniformita'. La sigma del
-          nucleo del DCB assorbe meno di quanto la quadratura predica, perche' il
-          termine di posizione non e' gaussiano (parabola su fascio quasi piatto),
-          quindi le due vie non coincidono e la loro distanza e' la sistematica.
+Error bars, in quadrature:
+  stat    weighted variance of the per-run sigmas, which already contains both the
+          noise of the individual fits and the run-to-run spread. Where a point has
+          a single run it is undefined and the fit error is used instead.
+  drift   run-to-run systematic on sigma, syst_sigma_ADC / peak_medio from
+          plot/<R>/sistematica_drift_<R>ohm.csv, scaled until chi2/ndf = 1
+  map     centroid systematic: the spread of sigma/mu between the per-run and the
+          per-energy response map (see uniformita_maps.py). It is an uncertainty on
+          HOW the surface is estimated, so it belongs in the error bars, unlike the
+          size of the correction itself.
 
-Uso:
+Usage:
   python3 plot/resolution_final_uniforme.py --plotdir plot \
       --unif plot/uniformita/uniformita_pos.csv --suffix _unif [--exclude 340:275]
 """
@@ -66,9 +66,9 @@ def load_drift(plotdir, R):
 
 
 def wscatter(vals, wts):
-    """Errore della media pesata dalla varianza pesata dei valori: contiene gia'
-    sia il rumore dei singoli fit sia la dispersione da run a run.
-    n_eff = (sum w)^2 / sum w^2; con un solo run non e' definito."""
+    """Error on the weighted mean from the weighted variance of the values: it already
+    contains both the noise of the individual fits and the run-to-run spread.
+    n_eff = (sum w)^2 / sum w^2; with a single run it is undefined."""
     v = np.asarray(vals, float); w = np.asarray(wts, float)
     g = np.isfinite(v) & (w > 0)
     v, w = v[g], w[g]
@@ -83,7 +83,7 @@ def wscatter(vals, wts):
 
 
 def load_scatter(cachedir, key="corr"):
-    """Scatter per (R, E) dai per-run gia' in plot/uniformita/_cache."""
+    """Scatter per (R, E) from the per-run values already in plot/uniformita/_cache."""
     out = {}
     for f in glob.glob(os.path.join(cachedir, "*.json")):
         c = json.load(open(f))
@@ -143,8 +143,8 @@ def main():
     S_340 = None
     for j, R in enumerate((340, 400, 500)):
         Es = sorted(e for (r, e) in U if r == R and (R, e) not in excl)
-        # senza BES il punto non e' sottraibile: lo stesso criterio di
-        # resolution_final.py, che richiede la riga in rereco_<R>_withBES.csv
+        # without BES the point cannot be subtracted: the same criterion as
+        # resolution_final.py, which requires the row in rereco_<R>_withBES.csv
         nobes = [e for e in Es if not (U[(R, e)]["bes"] > 0)]
         if nobes:
             print(f"  {R} ohm: escludo {nobes} GeV, BES assente in rereco_{R}_withBES.csv")
@@ -161,11 +161,11 @@ def main():
         bes = np.array([q["bes"] for q in u])
         syn = np.array([q["sync"] for q in u])
         pos_term = np.array([q["pos_term"] for q in u])          # POS naive, std(f)/mean(f)
-        # POS_eff: quanto la correzione evento per evento toglie DAVVERO alla sigma.
-        # Per costruzione  sqrt(raw^2 - bes^2 - syn^2 - POS_eff^2) = sqrt(corr^2 - bes^2 - syn^2),
-        # cioe' il valore centrale e' la sigma corretta, ma il termine e' esplicito e
-        # sottraibile come BES e sincrotrone. Non assume che il termine sia gaussiano:
-        # POS naive lo assume, e infatti sovrastima (vedi |POS - POS_eff| nel pannello basso).
+        # POS_eff: how much the event-by-event correction ACTUALLY removes from sigma.
+        # By construction  sqrt(raw^2 - bes^2 - syn^2 - POS_eff^2) = sqrt(corr^2 - bes^2 - syn^2),
+        # i.e. the central value is the corrected sigma, but the term is explicit and
+        # subtractable like BES and synchrotron. It does not assume the term is Gaussian:
+        # the naive POS does assume it, and indeed overestimates the term.
         cor = np.array([q["corr"] for q in u])
         pos_eff = np.sqrt(np.maximum(raw ** 2 - cor ** 2, 0.))
 
@@ -174,8 +174,8 @@ def main():
             efit = np.array([q["raw_err"] for q in u])
             esc = np.array([SCAT.get((R, e), np.nan) for e in Es])
         elif a.central == "run":
-            # nominale: media pesata delle sigma per run, corrette con la parabola
-            # del proprio run. BES e sincrotrone si sottraggono qui.
+            # nominal: weighted mean of the per-run sigmas, each corrected with the
+            # parabola of its own run. BES and synchrotron are subtracted here.
             srun = np.array([MAPS.get((R, e), {}).get("s_run", np.nan) for e in Es])
             cen = np.sqrt(np.maximum(srun ** 2 - bes ** 2 - syn ** 2, 0.))
             efit = np.array([MAPS.get((R, e), {}).get("err_run", np.nan) for e in Es])
@@ -184,13 +184,13 @@ def main():
         else:
             efit = np.array([q["corr_err"] for q in u])
             esc = np.array([SCAT.get((R, e), np.nan) for e in Es])
-        # errore statistico: varianza pesata dei sigma per run quando c'e' piu' di
-        # un run (contiene gia' l'errore dei fit), altrimenti quello dei fit
+        # statistical error: weighted variance of the per-run sigmas when there is
+        # more than one run (it already contains the fit error), else the fit error
         estat = np.where(np.isfinite(esc), np.maximum(efit, esc), efit)
         edrift = np.array([drift[R].get(e, 0.) for e in Es])
         if a.syst == "map":
-            # spread fra le tre mappe, sulla sigma/mu; propagato attraverso le
-            # sottrazioni: sigma_fin^2 = sigma^2 - cost  =>  d_fin = sigma*d/sigma_fin
+            # spread between the maps, on sigma/mu; propagated through the
+            # subtractions: sigma_fin^2 = sigma^2 - const  =>  d_fin = sigma*d/sigma_fin
             dsig = np.array([MAPS.get((R, e), {}).get("syst_pct", 0.) for e in Es])
             eunif = np.where(cen > 0, raw * dsig / np.maximum(cen, 1e-9), 0.)
         elif a.syst == "raw_corr":
@@ -244,8 +244,8 @@ def main():
         ax2.plot(x, raw, "o-", ms=5, color="0.35", label="$\\sigma/\\mu$")
         ax2.plot(x, bes, "D-.", ms=5, color="C1", label="BES")
         ax2.plot(x, syn, "^-", ms=5, color="C4", label="synchrotron")
-        # i punti a zero vanno messi a nan: su scala log matplotlib tirerebbe una
-        # riga verticale fino al fondo dell'asse
+        # zero points must be set to nan: on a log scale matplotlib would draw a
+        # vertical line down to the bottom of the axis
         if a.central != "raw":
             ax2.plot(x, np.where(pos_eff > 0, pos_eff, np.nan), "v-", ms=5, color="C2",
                      label="POS$_{eff}$")
@@ -278,7 +278,7 @@ def main():
             fh.write(",".join(f"{v:.5f}" if isinstance(v, float) else str(v)
                               for v in r) + "\n")
 
-    # ---------------------------------------------- fit simultaneo, S e C comuni
+    # ---------------------------------------------- simultaneous fit, S and C common
     Rs = [R for R in (340, 400, 500) if R in store]
     if len(Rs) >= 2:
         def chi2(S, C, N340, N400, N500):

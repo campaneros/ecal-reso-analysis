@@ -1,4 +1,7 @@
-"""Distribuzione di A_tot run per run, per vedere se il problema e' fra run o dentro un run."""
+"""
+A_tot distribution run by run, to tell whether the problem is between runs or
+inside a single run.
+"""
 import argparse, os
 import numpy as np, uproot
 import matplotlib; matplotlib.use("Agg")
