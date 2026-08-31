@@ -132,40 +132,185 @@ produces.
 
 ---
 
-## Conventions
+## Runs used
 
-**True energies, not nominal ones.** A beam set to 250 GeV actually carries 240.76.
-Above 100 GeV the difference reaches 5 %, and using the nominal values fabricates a
-spurious non-linearity of a few percent. Every script uses the "Final Energy" column
-of the beam log, encoded in the `VERA` dictionary.
+The standard set, after `--runset standard` drops the 50 MHz runs, the 275 GeV high
+population and the excluded outliers (see **Run conditions** below).
 
-**Selection.** `|pos_eta − 18| ≤ 0.2`, `|pos_phi − 6| ≤ 0.2`, `A_tot > 100` ADC. The
-noise threshold is the same for all energies and resistances.
+### 340 ohm — 13 energies, 39 runs
 
-**Run conditions.** Not every run in the merged files belongs to the same readout
-configuration, and mixing them turns a single response peak into two. `runsets.py`
-holds the three lists, and every script that reads runs takes `--runset`:
+| E [GeV] | runs |
+|---|---|
+| 20 | 20895 20896 20897 20898 20899 |
+| 30 | 20541 |
+| 40 | 20530 |
+| 60 | 20528 |
+| 80 | 20526 |
+| 100 | 20521 |
+| 120 | 20474 |
+| 150 | 20535 |
+| 175 | 20539 |
+| 200 | 20427 20428 20429 20434 |
+| 225 | 20513 20514 20515 20517 20518 20615 20616 20617 |
+| 250 | 20481 20482 20560 20561 20562 20563 20564 20565 20566 20585 |
+| 275 | 20636 20637 20638 20639 |
 
-| set | runs | why |
+Eight of these twelve energies (275 GeV is excluded from the final curve) are left
+with a **single run**, which is why the drift systematic cannot be estimated there.
+
+### 400 ohm — 9 energies, 54 runs
+
+| E [GeV] | runs |
+|---|---|
+| 20 | 20753 |
+| 40 | 20841 20842 20843 |
+| 60 | 20847 20848 20849 |
+| 80 | 20909 20911 20912 20913 20914 20915 20917 20918 20919 20920 |
+| 100 | 20769 20770 20771 20772 |
+| 150 | 20780 20781 20782 20786 20787 20788 20789 20799 20800 20801 |
+| 200 | 20700 20701 20702 |
+| 225 | 20676 20677 20678 20679 20680 20681 |
+| 250 | 20683 20684 20686 20687 20688 20689 20690 20691 20692 20693 20694 20695 20696 20699 |
+
+### 500 ohm — 7 energies, 30 runs
+
+| E [GeV] | runs |
+|---|---|
+| 30 | 21045 21046 21047 |
+| 40 | 21090 21091 21092 21093 21094 21095 21096 21097 21098 21099 |
+| 50 | 21033 21034 21035 21036 21037 |
+| 60 | 21081 21082 21116 |
+| 80 | 21119 |
+| 100 | 21056 21057 21058 |
+| 150 | 20938 20950 20951 20953 20954 |
+
+500 ohm 50 GeV is dropped from the final curve because no BES is available for it.
+
+Two runs deserve a note, because they are kept in the standard set but their
+configuration is not fully documented: **20615-20617** (225 GeV) are marked
+`340 ohm 35 MHz LPF on` in the run sheet, a low-pass filter that does not shift the
+response but does change the shaping; **20636-20639** (275 GeV) have an empty CATIA
+resistance field.
+
+---
+
+## Systematics
+
+The nominal point is the weighted mean over runs of sigma/mu from the per-run
+double-CB fit, each run corrected event by event for the response non-uniformity with
+the parabola of that run. Three contributions are then subtracted in quadrature,
+because they are not calorimeter resolution:
+
+```
+(sigma/E)^2 = (sigma/mu)^2 - BES^2 - synchrotron^2 - POS_eff^2 - drift^2
+```
+
+POS_eff only in the chain that cuts on the centroid; drift wherever it is defined,
+that is on the points with more than one run.
+
+| term | what it is | how it is obtained |
 |---|---|---|
-| `FILTER_50MHZ` | 20587-20604 | 50 MHz filter on the readout. Only at 340 ohm, at 60, 80, 150 and 250 GeV; median A_tot 2.6-3.5 % above the standard runs at the same energy. Analysed separately with `--runset filter50`. |
-| `HIGH_275` | 20652-20659 | High-response population at 275 GeV, +3.9 %. Same size of shift as the 50 MHz runs but outside that range; cause not established. |
-| `OUTLIERS` | 20491 | 120 GeV, 1.5 % above the other run at the same energy, no configuration difference on record. |
+| BES | beam energy spread: the SPS does not deliver monochromatic electrons | `dp/p [%] = sqrt(C3^2 + C8^2)/(27*sqrt(3))` from the collimator half-openings in mm, eq. (2) of CERN-SL-Note-97-81. Read from `bes/rereco_<R>_withBES.csv` |
+| synchrotron | radiation loss in the beam-line magnets | `1.92e-7 * E^2.5` in percent, on the true beam energy. Negligible below 100 GeV, 0.17 % at 250 |
+| POS_eff | the response is not flat across the selection window, so part of the width comes from where the shower landed | defined as what the correction actually removes, `POS_eff^2 = (sigma_raw/mu)^2 - (sigma_corr/mu)^2`. See below |
 
-`--runset standard` (the default) drops all three; `--runset filter50` keeps only the
-50 MHz runs; `--runset all` filters nothing beyond `--exclude-runs`, which stays
-available for one-off exclusions.
+**Why POS_eff and not std(f)/mean(f).** The obvious estimate of the position term is
+the spread of the response factor over the events. It **overestimates**: 0.166 %
+against 0.132 % at 340 ohm, 0.184 against 0.089 at 500. Quadrature subtraction is
+exact for the total RMS but not for the sigma of the *core* of a double-CB, and the
+position term is a parabola over a nearly flat beam, so it is not Gaussian and widens
+the tails more than the core. Verified both ways: on the truncated RMS the quadrature
+identity holds exactly (340 ohm 40 GeV: 1.0540 % to 1.0411 % measured against 1.0414
+expected), on the fitted sigma it does not.
 
-After these exclusions eight of the twelve energies at 340 ohm are left with a single
-run. A single run means no run-to-run drift systematic can be estimated, so the error
-bar on those points is purely statistical and the chi2 of the N/S/C fit is not a
-measure of goodness of fit. `sistematica_risoluzione.py --fallback` exists to assign
-those points the systematic measured where two or more runs are available.
+The error bar is the statistical term alone, since drift and POS_eff are
+subtracted rather than carried:
 
-**Parabola fits.** Always in the form `a + bx + cx²`, never `p₁ + p₂(x − p₀)²`: the
-latter has degenerate vertex and curvature — a shift of the vertex is compensated by
-a change in curvature — and on this data the fit runs away. The former is a linear
-system and has a single solution.
+| term | how it is obtained |
+|---|---|
+| statistical | weighted variance of the per-run sigma/mu, `SE^2 = sum w (x - xbar)^2 / (sum w * (n_eff - 1))` with `n_eff = (sum w)^2 / sum w^2`. This already contains both the noise of the individual fits and the run-to-run spread. Where a point has a single run it is undefined and the fit error is used |
+| drift | subtracted as well, and **not** an error bar: run-to-run systematic on sigma, computed **energy by energy on the per-run sigma values of the selection in use**: the extra error which, added in quadrature, makes the fit of those sigmas to a constant give chi2/ndf = 1 (the PDG scale-factor method). With a single run there is no spread and it is zero by construction. It must not be imported from another selection: cutting on the hodoscope keeps a different set of runs, so the drift differs -- at 340 ohm 250 GeV it is 0.022 with the centroid cut and 0.000 with the hodoscope one |
+| centroid | how much the answer depends on **how** the response surface is estimated: the difference between correcting with the parabola of each run and correcting with the parabola of the energy, `uniformita_maps.py`. Median 0.0006 percentage points, and exactly zero on the six points with a single run, where the two maps coincide by construction |
 
-**Plot titles.** Cuts in mathematical form plus identifiers (resistance, energy, run,
-N) only. Axis labels in English.
+Typical sizes, as medians over the points of each resistance:
+
+| | statistical | drift | centroid |
+|---|---|---|---|
+| 340 ohm | 0.008 | 0.008 | 0.0004 |
+| 400 ohm | 0.009 | 0.020 | 0.0007 |
+| 500 ohm | 0.011 | 0.018 | 0.0042 |
+
+**A caveat on the chi2.** After the run exclusions, eight of the twelve energies at
+340 ohm have a single run. There the drift systematic is zero by construction and the
+error bar is purely statistical, so the chi2 of the N/S/C fit is not a measure of
+goodness of fit: it is dominated by a point-to-point scatter that nothing is left to
+estimate. `sistematica_risoluzione.py --fallback` exists to assign those points the
+systematic measured where two or more runs are available; whether to apply it is an
+open choice.
+
+Two systematics that were **measured and found negligible**, and are therefore not
+carried: the granularity of the response map (grids of 12, 40 and 150 bins per side
+give a median spread of 0.001-0.003 percentage points, under 1 % of POS_eff) and the
+choice of a flat-illumination reweighting, which does not remove the position term at
+all and is kept only as a cross-check.
+
+---
+
+## Cutting on the hodoscope instead of the centroid
+
+The standard selection cuts on the ECAL centroid, which is built from the same
+amplitudes whose width is being measured. `resolution_hodo.py` repeats the analysis
+with the position cut taken from the hodoscope, which is independent of the
+calorimeter, and produces both curves on the same plot
+(`plot/hodo/resolution_hodo_<R>ohm.png`).
+
+**The window needs no calibration.** It is the contiguous range around the maximum
+of the response profile where `<A_tot>` stays within 0.5 % of its plateau (`--tol`).
+x is the average of the two x planes over [-15, 0] mm, y is the second plane only
+over [0, 8] mm: the first y plane fires a single cluster in 42 % of events against
+65 % for the second, below zero the y profile is jagged with no parabola, and above
+8 mm some energies show a rise of up to 2 % that is not the crystal response.
+
+**What differs between the two chains, and why.**
+
+| | centroid cut | hodoscope cut |
+|---|---|---|
+| non-uniformity correction | applied, per-run 2D paraboloid | **not applied** |
+| POS_eff subtracted | yes | **no** |
+| drift subtracted | yes, computed on this selection | yes, computed on this selection |
+| statistical error | sigma of the sigma, weights 1/sigma^2 | same |
+
+Plots: `plot/hodo/resolution_terms_cen.png` and `plot/hodo/resolution_terms_hodo.png`
+show the three resistances with the size of every subtracted term in the panel below,
+and `plot/hodo/resolution_hodo_<R>ohm.png` overlays the two cuts on the same axes.
+
+The position correction belongs only to the chain that cuts on the centroid. With
+the hodoscope the position does not enter the selection at all, so there is nothing
+to correct and nothing to subtract; the only systematic common to both chains is the
+drift, and it goes into the error bars, not into the subtraction.
+
+The consequence is that **the constant terms of the two chains are not the same
+quantity** and must not be quoted as a discrepancy: the centroid one has POS_eff
+removed, the hodoscope one still contains it. The difference in quadrature is
+consistent with the POS_eff of about 0.14 % that the centroid chain subtracts.
+
+| | N (MeV) | S (%) | C (%) | chi2/ndf |
+|---|---|---|---|---|
+| 340 ohm, centroid | 280 +- 6 | 3.41 | 0.245 | 60.7/9 |
+| 340 ohm, hodoscope | 274 +- 9 | 3.36 | 0.300 | **20.7/9** |
+| 400 ohm, centroid | 309 +- 3 | 0.00 | 0.366 | 53.7/6 |
+| 400 ohm, hodoscope | 285 +- 11 | 1.13 | 0.415 | **17.2/6** |
+| 500 ohm, centroid | 264 +- 9 | 2.60 | 0.300 (fixed) | 98.8/5 |
+| 500 ohm, hodoscope | 290 +- 18 | 2.33 | 0.300 (fixed) | **39.1/5** |
+
+The chi2 is better with the hodoscope cut at all three resistances, by a factor 3 to
+5. Moving the cut off the centroid does not move N, and S stays compatible: the
+circularity of cutting on a variable built from the amplitudes is real but it does
+not bite.
+
+The cost is statistics: requiring exactly one cluster in the planes used keeps a
+median of 30-47 % of the events of the centroid cut, and as little as 7 % on the
+worst point (340 ohm 250 GeV, where the y plateau is only 1.75 mm wide). Points where
+the y profile is so flat that the 0.5 % threshold does not bite, and the window ends
+up set by the edges of the search range rather than by the response, should not be
+over-read either.
