@@ -45,7 +45,8 @@ import matplotlib.pyplot as plt
 from iminuit import Minuit
 from iminuit.cost import LeastSquares
 import runsets
-from uniformita_pos import fit_dcb, rel, wmean, wscatter, design, VERA, A_TOT_MIN
+from uniformita_pos import (fit_dcb, rel, wmean, wscatter, design, VERA,
+                           A_TOT_MIN, TAILS)
 from drift_dcb_all import syst_for_unit_chi2
 from hodoscope_calib import (hodo_xy, FILES, crystal_curvature, response_profile,
                              parabola_scan, COORD)
@@ -199,6 +200,11 @@ def main():
                     help="R:E points dropped entirely")
     ap.add_argument("--nofit-energies", nargs="*", type=int, default=[250, 275],
                     help="energies kept in the plot but left out of the N/S/C fit")
+    ap.add_argument("--tails", choices=("free", "fixed", "both"), default="both",
+                    help="DCB tail parameters per run: free, or held at the values of "
+                         "the pooled fit of the same energy. 'both' takes free as the "
+                         "nominal and carries |free - fixed| as a systematic on the "
+                         "fit model, added to the error bar")
     runsets.add_argument(ap)
     a = ap.parse_args()
     drop, only = runsets.resolve(a.runset, a.exclude_runs)
@@ -287,59 +293,72 @@ def main():
                        x_lo=wx[0], x_hi=wx[1], x_drop=wx[2], n_x=wx[3],
                        y_lo=wy[0], y_hi=wy[1], y_drop=wy[2], n_y=wy[3])
             for tag, m in (("cen", cut_c), ("hodo", cut_h)):
-                vals, errs, raws, rns = [], [], [], []
-                for r in sorted(int(v) for v in np.unique(run[m])):
-                    q = m & (run == r)
-                    if q.sum() < 300:
-                        continue
-                    f0 = fit_dcb(at[q], E, R)
-                    if f0 is None:
-                        continue
-                    # la correzione della non-uniformita' si applica SOLO quando il
-                    # taglio e' sul centroide. Con il taglio sull'odoscopio la
-                    # posizione non entra nella selezione, quindi non si corregge e
-                    # non si sottrae POS_eff: l'unica sistematica comune alle due
-                    # catene e' quella di drift, che sta nelle barre d'errore.
-                    if tag == "cen":
-                        ac = correct_response(at[q], (pe - ETA0)[q], (pp - PHI0)[q],
-                                              (f0["lo"], f0["hi"]))
-                        fc = fit_dcb(ac, E, R)
-                    else:
-                        fc = f0
-                    if fc is None:
-                        continue
-                    v, e = rel(fc)
-                    vals.append(v); errs.append(e); raws.append(rel(f0)[0])
-                    rns.append(r)
-                # pesi 1/sigma^2, come chiesto: l'errore statistico e' la sigma della
-                # sigma dalla varianza pesata con quei pesi; dove c'e' un solo run non
-                # e' definita e si usa l'errore della media pesata
-                # Dove nessun run singolo arriva a NMIN eventi il punto non si perde:
+                # code del DCB dal fit cumulativo di questa energia e di questa
+                # selezione: ad alta statistica sono determinate, run per run no
+                tails = None
+                if a.tails in ("fixed", "both") and m.sum() >= 500:
+                    fp = fit_dcb(at[m], E, R)
+                    if fp is not None:
+                        tails = fp["tails"]
+
+                def per_run(fix):
+                    """sigma/mu con il suo errore, e il picco con il suo, run per run"""
+                    V, Er, Rw, Pk, Ep, Rn = [], [], [], [], [], []
+                    for r in sorted(int(u) for u in np.unique(run[m])):
+                        q = m & (run == r)
+                        if q.sum() < 300:
+                            continue
+                        f0 = fit_dcb(at[q], E, R, fix=fix)
+                        if f0 is None:
+                            continue
+                        # la correzione della non-uniformita' si applica SOLO quando
+                        # il taglio e' sul centroide
+                        if tag == "cen":
+                            ac = correct_response(at[q], (pe - ETA0)[q], (pp - PHI0)[q],
+                                                  (f0["lo"], f0["hi"]))
+                            fc = fit_dcb(ac, E, R, fix=fix)
+                        else:
+                            fc = f0
+                        if fc is None:
+                            continue
+                        v, e = rel(fc)
+                        V.append(v); Er.append(e); Rw.append(rel(f0)[0])
+                        Pk.append(f0["peak"]); Ep.append(f0["err_peak"]); Rn.append(r)
+                    return V, Er, Rw, Pk, Ep, Rn
+
+                vals, errs, raws, peaks, epeaks, rns = per_run(
+                    tails if a.tails == "fixed" else None)
+                # variante col modello alternativo, per la sistematica sul fit
+                alt = (per_run(tails)[0] if (a.tails == "both" and tails) else [])
+
+                # Dove nessun run singolo arriva a 300 eventi il punto non si perde:
                 # si fa UN fit cumulativo su tutti i run insieme. Succede a 340 ohm
-                # 250 GeV, dove il taglio sull'odoscopio lascia 846 eventi su 8 run,
-                # cioe' un centinaio per run. Il punto esce con l'errore del fit, il
-                # drift resta indefinito (non c'e' piu' una dispersione fra run da
-                # misurare) e la colonna nrun_* vale 0 per segnalarlo.
+                # 250 GeV, dove il taglio sull'odoscopio lascia 846 eventi su 8 run.
                 pooled = False
+                fx = tails if a.tails == "fixed" else None
                 if not vals and m.sum() >= 500:
-                    f0 = fit_dcb(at[m], E, R)
+                    f0 = fit_dcb(at[m], E, R, fix=fx)
                     if f0 is not None:
                         if tag == "cen":
                             ac = correct_response(at[m], (pe - ETA0)[m], (pp - PHI0)[m],
                                                   (f0["lo"], f0["hi"]))
-                            fc = fit_dcb(ac, E, R)
+                            fc = fit_dcb(ac, E, R, fix=fx)
                         else:
                             fc = f0
                         if fc is not None:
                             v, e = rel(fc)
                             vals, errs, raws, rns = [v], [e], [rel(f0)[0]], [0]
+                            peaks, epeaks = [f0["peak"]], [f0["err_peak"]]
                             pooled = True
                 out[tag + "_pooled"] = int(pooled)
+                # pesi 1/sigma^2, come chiesto: l'errore statistico e' la sigma della
+                # sigma dalla varianza pesata con quei pesi
                 wts = [1.0 / (e * e) if e > 0 else 0.0 for e in errs]
                 if not vals:
                     for k, v in ((tag, np.nan), (tag + "_stat", np.nan),
                                  (tag + "_drift", 0.), (tag + "_pos", 0.),
-                                 (tag + "_chi2", np.nan), (tag + "_err", np.nan)):
+                                 (tag + "_chi2", np.nan), (tag + "_tails", 0.),
+                                 (tag + "_err", np.nan)):
                         out[k] = v
                     out["nrun_" + tag] = 0
                     out[tag + "_runs"] = []
@@ -350,35 +369,41 @@ def main():
                 # POS_eff, solo per la catena col centroide
                 out[tag + "_pos"] = (float(np.sqrt(max(mu_raw ** 2 - mu ** 2, 0.)))
                                      if tag == "cen" else 0.)
-                # statistico: varianza pesata quando c'e' piu' di un run, altrimenti
-                # l'errore del fit; poi in quadratura la sistematica di drift.
-                # Nessuna sistematica di posizione: con il taglio sull'odoscopio la
-                # non-uniformita' non viene corretta, quindi non c'e' niente da
-                # propagare su di essa.
                 est = max(er, sc) if np.isfinite(sc) else er
                 out[tag] = mu
                 out[tag + "_stat"] = est
-                # drift: calcolato energia per energia SULLE SIGMA DI QUESTA
-                # selezione, non importato da quella col centroide. E' l'errore
-                # aggiuntivo che porta a chi2/ndf = 1 il fit delle sigma per run a
-                # una costante; con un solo run non c'e' dispersione ed e' zero.
-                # chi2 osservato PRIMA di aggiungere la sistematica: e' quello che
-                # distingue "drift zero perche' c'e' un solo run" da "drift zero
-                # perche' le sigma per run sono gia' compatibili fra loro". Con il
-                # taglio sull'odoscopio gli eventi per run sono circa la meta', gli
-                # errori per run crescono di sqrt(2), il chi2 cala di un fattore 2 e
-                # il drift si riduce di conseguenza: non e' un bug, e' la definizione.
+                # sistematica sul modello di fit: quanto si sposta il punto se le code
+                # del DCB si tengono fisse invece che libere. Non e' una larghezza da
+                # togliere, e' un'ambiguita' sulla misura, quindi va nella barra
+                ts = 0.
+                if alt:
+                    n = min(len(alt), len(errs))
+                    aw = [1.0 / (e * e) if e > 0 else 0.0 for e in errs[:n]]
+                    ma = wmean(alt[:n], errs[:n], aw)[0]
+                    if np.isfinite(ma):
+                        ts = abs(mu - ma)
+                out[tag + "_tails"] = ts
+                # DRIFT SUL PICCO, non sulla sigma. La sigma di ogni run e' misurata
+                # attorno al picco di quel run, quindi il drift fra run non la sporca
+                # direttamente: quello che si misura sui picchi e' l'instabilita' della
+                # risposta, ed e' la stessa instabilita' che, agendo dentro un run,
+                # allarga la sigma. Si stima dai picchi per run -- l'errore in piu' che
+                # porta il loro fit a una costante a chi2/ndf = 1 -- e si esprime in
+                # punti percentuali del picco medio, cosi' e' sottraibile in quadratura
+                # da sigma/mu. Con un solo run non c'e' dispersione ed e' zero.
                 dr, c0 = 0., np.nan
-                if len(vals) > 1:
-                    q = syst_for_unit_chi2(np.array(vals), np.array(errs))
-                    dr = float(q[0]) if np.isfinite(q[0]) else 0.
-                    c0 = float(q[1])
+                if len(peaks) > 1:
+                    qq = syst_for_unit_chi2(np.array(peaks), np.array(epeaks))
+                    c0 = float(qq[1])
+                    if np.isfinite(qq[0]) and qq[2] > 0:
+                        dr = float(100 * qq[0] / qq[2])
                 out[tag + "_drift"] = dr
                 out[tag + "_chi2"] = c0
-                out[tag + "_err"] = math.hypot(est, dr)
+                # la barra porta lo statistico e la sistematica sul modello di fit;
+                # il drift NON sta nella barra, si sottrae
+                out[tag + "_err"] = math.hypot(est, ts)
                 out["nrun_" + tag] = 0 if pooled else len(vals)
-                # sigma per run, servono al plot di controllo del drift
-                out[tag + "_runs"] = list(zip(rns, vals, errs))
+                out[tag + "_runs"] = list(zip(rns, vals, errs, peaks, epeaks))
             b = bes.get(E, 0.); syn = SYNC_C * out["energy_true"] ** 2.5
             out["bes"] = b; out["sync"] = syn
             for tag in ("cen", "hodo"):
@@ -399,8 +424,9 @@ def main():
         return
     cols = ("resistance,energy,energy_true,window,n_centroid,n_hodo,nrun_cen,nrun_hodo,"
             "x_lo,x_hi,x_drop,n_x,y_lo,y_hi,y_drop,n_y,bes,sync,"
-            "cen,cen_stat,cen_drift,cen_chi2,cen_pos,cen_err,cen_corr,cen_pooled,"
-            "hodo,hodo_stat,hodo_drift,hodo_chi2,hodo_pos,hodo_err,hodo_corr,hodo_pooled")
+            "cen,cen_stat,cen_drift,cen_chi2,cen_tails,cen_pos,cen_err,cen_corr,"
+            "cen_pooled,hodo,hodo_stat,hodo_drift,hodo_chi2,hodo_tails,hodo_pos,"
+            "hodo_err,hodo_corr,hodo_pooled")
     p = os.path.join(a.outdir, "resolution_hodo.csv")
     with open(p, "w") as fh:
         fh.write(cols + "\n")
@@ -411,24 +437,24 @@ def main():
 
     p = os.path.join(a.outdir, "sigma_per_run.csv")
     with open(p, "w") as fh:
-        fh.write("resistance,energy,chain,run,sigma_pct,err_pct\n")
+        fh.write("resistance,energy,chain,run,sigma_pct,err_pct,peak,err_peak\n")
         for r in rows:
             for tag in ("cen", "hodo"):
-                for rn, v, e in r.get(tag + "_runs", []):
+                for rn, v, e, pk, ep in r.get(tag + "_runs", []):
                     fh.write(f"{r['resistance']},{r['energy']},{tag},{rn},"
-                             f"{v:.6g},{e:.6g}\n")
+                             f"{v:.6g},{e:.6g},{pk:.6g},{ep:.6g}\n")
     print("->", p)
 
     Rs = [R for R in (340, 400, 500) if any(r["resistance"] == R for r in rows)]
 
     # ---- controllo del drift, energia per energia -------------------------
-    # Un pannello per energia: le sigma dei singoli run con il loro errore, la media
-    # pesata, e il chi2/ndf del fit a una costante PRIMA di aggiungere la sistematica.
-    # Il drift e' l'errore in piu' che porta quel chi2/ndf a 1: dove il chi2/ndf e'
-    # gia' <= 1 il drift e' zero perche' non serve niente, e il pannello lo mostra.
+    # Un pannello per energia: il PICCO dei singoli run, normalizzato al picco medio,
+    # con il suo errore di fit, la costante e la banda di drift. Il drift e' l'errore
+    # in piu' che porta il chi2/ndf di quel fit a 1: dove il chi2/ndf e' gia' <= 1 il
+    # drift e' zero perche' non serve niente, e il pannello lo mostra.
     for tag, lab in (("cen", "centroid"), ("hodo", "hodoscope")):
         for R in Rs:
-            q = [r for r in rows if r["resistance"] == R and r.get(tag + "_runs")]
+            q = [r for r in rows if r["resistance"] == R and len(r.get(tag + "_runs", [])) > 1]
             if not q:
                 continue
             nc = 4; nr = int(np.ceil(len(q) / nc))
@@ -437,26 +463,25 @@ def main():
                 ax = axs[k // nc][k % nc]
                 pr = r[tag + "_runs"]
                 xs = np.arange(len(pr))
-                ys = np.array([v for _, v, _ in pr])
-                es = np.array([e for _, _, e in pr])
-                mu, dr = r[tag], r.get(tag + "_drift", 0.)
+                pk = np.array([p for _, _, _, p, _ in pr])
+                ep = np.array([e for _, _, _, _, e in pr])
+                w = 1. / ep ** 2
+                m0 = float((pk * w).sum() / w.sum())
+                ys = 100 * (pk / m0 - 1.); es = 100 * ep / m0
+                dr = r.get(tag + "_drift", 0.)
                 c0 = r.get(tag + "_chi2", np.nan)
                 ax.errorbar(xs, ys, yerr=es, fmt="o", ms=5, capsize=3, color="C0")
-                ax.axhline(mu, color="C3", lw=1.6,
-                           label=f"weighted mean {mu:.4f}")
+                ax.axhline(0., color="C3", lw=1.6,
+                           label=f"weighted mean {m0:.1f} ADC")
                 if dr > 0:
-                    ax.axhspan(mu - dr, mu + dr, color="C3", alpha=.15,
-                               label=f"$\\pm$ drift {dr:.4f}")
+                    ax.axhspan(-dr, dr, color="C3", alpha=.15,
+                               label=f"$\\pm$ drift {dr:.4f} %")
                 ax.set_xticks(xs)
-                ax.set_xticklabels([str(rn) for rn, _, _ in pr], rotation=90,
-                                   fontsize=6)
+                ax.set_xticklabels([str(rn) for rn, *_ in pr], rotation=90, fontsize=6)
                 ndf = len(pr) - 1
-                if ndf < 1:
-                    txt = "1 run: no drift to measure"
-                    col = "0.4"
-                elif dr > 0:
+                if dr > 0:
                     txt = (f"$\\chi^2$/ndf {c0:.2f} ({ndf} ndf) $>$ 1  "
-                           f"$\\rightarrow$ drift {dr:.4f}")
+                           f"$\\rightarrow$ drift {dr:.4f} %")
                     col = "C3"
                 else:
                     txt = (f"$\\chi^2$/ndf {c0:.2f} ({ndf} ndf) $\\leq$ 1  "
@@ -464,13 +489,13 @@ def main():
                     col = "C2"
                 ax.set_title(f"{r['energy']} GeV\n{txt}", fontsize=8.5, color=col,
                              linespacing=1.5)
-                ax.set_ylabel("$\\sigma/\\mu$  [%]", fontsize=8)
+                ax.set_ylabel("peak / $\\langle$peak$\\rangle$ $-$ 1  [%]", fontsize=8)
                 ax.tick_params(axis="y", labelsize=7); ax.grid(alpha=.3, axis="y")
                 ax.legend(fontsize=6.5, loc="best")
             for k in range(len(q), nr * nc):
                 axs[k // nc][k % nc].set_axis_off()
-            fig.suptitle(f"{R} $\\Omega$ — cut on the {lab} — per-run $\\sigma/\\mu$ "
-                         f"against a constant.  green: already compatible, drift = 0.  "
+            fig.suptitle(f"{R} $\\Omega$ — cut on the {lab} — per-run PEAK against a "
+                         f"constant.  green: already compatible, drift = 0.  "
                          f"red: extra error needed", fontsize=11)
             fig.tight_layout(rect=(0, 0, 1, 0.985))
             p = os.path.join(a.outdir, f"drift_check_{tag}_{R}ohm.png")

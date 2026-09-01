@@ -223,13 +223,45 @@ the tails more than the core. Verified both ways: on the truncated RMS the quadr
 identity holds exactly (340 ohm 40 GeV: 1.0540 % to 1.0411 % measured against 1.0414
 expected), on the fitted sigma it does not.
 
-The error bar is the statistical term alone, since drift and POS_eff are
-subtracted rather than carried:
+**The drift is on the peak, not on the resolution.** The sigma of each run is measured
+about the peak of that run, so a drift between runs does not enter it directly: what
+the run-to-run comparison measures is the instability of the *response*, and it is the
+same instability which, acting inside a run, widens the sigma. So the drift is
+estimated on the per-run **peaks** — the extra error which, added in quadrature, makes
+their fit to a constant give chi2/ndf = 1 — expressed in percentage points of the mean
+peak, `100 * s_peak / <peak>`, which makes it subtractable in quadrature from sigma/mu.
+
+This is worth stating plainly: subtracting a *run-to-run* instability from a *per-run*
+sigma assumes the same instability operates within a run. That assumption is not
+measured here. The opposite view — that a per-run sigma already excludes drift and
+nothing should be removed — is defensible too.
+
+Measuring it on the peak rather than on the sigma changes the size of the term by an
+order of magnitude, because the peak is determined far better than the sigma
+(`d_peak/peak ~ 1e-4` against `d_sigma/sigma ~ 1e-2`), so a real gain step of a tenth
+of a percent is overwhelming evidence on the peak and invisible on the sigma. At
+500 ohm 60 GeV the three runs sit at -0.05, -0.09 and +0.17 % of the mean peak with
+errors of 0.02 %: chi2/ndf = 142, drift 0.139 %. On the sigmas the same three runs gave
+chi2/ndf = 0.08 and a drift of exactly zero.
+
+**A systematic on the fit model.** The double CB has four tail parameters. Left free
+per run they are badly determined — `n_l` and `n_h` rail against their limit of 10 in
+most fits — and sigma, correlated with them, carries an error about twice what it
+would otherwise have. Held at the values of the pooled fit of the same energy the
+error on sigma shrinks by a factor 1.4 to 1.9, and a bootstrap confirms the smaller
+error is the true one; but sigma itself moves by up to 1 %, so it is a change of
+model, not a free improvement. `--tails both` (the default) therefore takes the
+free-tail fit as the nominal and carries `|free - fixed|` as a systematic. It is an
+ambiguity on the measured value rather than a width to remove, so unlike the others it
+goes **into** the error bar.
+
+The error bar is the statistical term and the fit-model systematic; drift and POS_eff
+are subtracted rather than carried:
 
 | term | how it is obtained |
 |---|---|
 | statistical | weighted variance of the per-run sigma/mu, `SE^2 = sum w (x - xbar)^2 / (sum w * (n_eff - 1))` with `n_eff = (sum w)^2 / sum w^2`. This already contains both the noise of the individual fits and the run-to-run spread. Where a point has a single run it is undefined and the fit error is used |
-| drift | subtracted as well, and **not** an error bar: run-to-run systematic on sigma, computed **energy by energy on the per-run sigma values of the selection in use**: the extra error which, added in quadrature, makes the fit of those sigmas to a constant give chi2/ndf = 1 (the PDG scale-factor method). It must not be imported from another selection: cutting on the hodoscope keeps a different set of runs, so the drift differs. See **Reading a drift of zero** below |
+| drift | subtracted as well, and **not** an error bar: run-to-run instability of the **response**, measured on the per-run **peak** and not on the per-run sigma. See **The drift is on the peak** below |
 | centroid | how much the answer depends on **how** the response surface is estimated: the difference between correcting with the parabola of each run and correcting with the parabola of the energy, `uniformita_maps.py`. Median 0.0006 percentage points, and exactly zero on the six points with a single run, where the two maps coincide by construction |
 
 Typical sizes, as medians over the points of each resistance:
@@ -248,7 +280,13 @@ estimate. `sistematica_risoluzione.py --fallback` exists to assign those points 
 systematic measured where two or more runs are available; whether to apply it is an
 open choice.
 
-**Are the per-run error bars right?** The whole drift depends on them, so they were
+**Are the per-run error bars right?** The bar is the HESSE error of the double-CB fit
+propagated to the ratio, `e = (sigma/mu) * sqrt((d_sigma/sigma)^2 + (d_peak/peak)^2)`.
+The peak term contributes nothing — `d_peak/peak ~ 1e-4` against `d_sigma/sigma ~ 1e-2`
+— and although sigma and peak are correlated, `rho ~ -0.45`, adding the covariance term
+changes the bar by less than 0.5 %. The bar is, to all intents, `d_sigma/mu`.
+
+ The whole drift depends on them, so they were
 checked against a bootstrap — `dcb_error_check.py`. The bar on each per-run sigma/mu is
 the HESSE error of the double-CB fit propagated to the ratio,
 `e = (sigma/mu) * sqrt((d_sigma/sigma)^2 + (d_peak/peak)^2)`. It comes out three to
@@ -269,29 +307,19 @@ truth by 20-30 %. The direction matters: too-small errors make the chi2 too larg
 therefore the drift too large, so the points where the drift comes out zero would come
 out zero with the correct errors as well.
 
-**Reading a drift of zero.** A drift term equal to zero means one of two different
-things, and the CSV keeps them apart through the `nrun_*` and `*_chi2` columns:
+**Reading a drift of zero.** Measured on the peak the drift is non-zero at almost
+every point with more than one run. Where it is zero, the `nrun_*` and `*_chi2`
+columns say which of two things happened:
 
-* `nrun = 1` — the point has a single run, there is no run-to-run dispersion to
-  measure and the drift is undefined, not small. Eight of the eleven energies at
-  340 ohm are in this situation after the run exclusions;
-* `nrun > 1` and `chi2/ndf <= 1` — the per-run sigmas are already compatible with a
-  constant within their own errors, so the extra error needed to reach chi2/ndf = 1 is
-  exactly zero. This is what the PDG prescription gives, not a failure of it.
+* `nrun = 1` — a single run, no dispersion to measure, drift undefined rather than
+  small. Eight of the eleven energies at 340 ohm are in this case;
+* `nrun > 1` and `chi2/ndf <= 1` — the per-run peaks are already compatible with a
+  constant, so the extra error needed is exactly zero.
 
-The two cases are drawn differently in the lower panel of the resolution plot: a cross
-on the axis for a single run, an open square for a drift that came out zero.
-
-Where chi2/ndf is above 1 the drift is there and is usually the largest term at that
-point: 340 ohm 20 GeV chi2/ndf 1.85 gives 0.045, 400 ohm 40 GeV chi2/ndf 6.8 gives
-0.052, 500 ohm 30 GeV chi2/ndf 6.6 gives 0.045.
-
-The drift comes out **smaller with the hodoscope cut than with the centroid one**, and
-this is a consequence of the definition rather than a discrepancy: the hodoscope cut
-keeps roughly half the events, so the error on each per-run sigma grows by about
-sqrt(2), the chi2 against a constant falls by about a factor of two, and the excess
-scatter that the drift is meant to describe shrinks with it. The drift measures what
-is left over and above the statistical error, and that error is larger here.
+The two are drawn differently in the lower panel of the resolution figure: a cross on
+the axis for a single run, an open square for a drift that came out zero.
+`drift_check_<chain>_<R>ohm.png` shows the peaks run by run with the chi2 that decided
+it.
 
 Two systematics that were **measured and found negligible**, and are therefore not
 carried: the granularity of the response map (grids of 12, 40 and 150 bins per side
