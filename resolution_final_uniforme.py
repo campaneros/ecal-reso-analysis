@@ -108,7 +108,7 @@ def main():
     ap.add_argument("--plotdir", default="plot")
     ap.add_argument("--unif", default="plot/uniformita/uniformita_pos.csv")
     ap.add_argument("--exclude", nargs="*", default=["340:275"])
-    ap.add_argument("--central", choices=("run", "corr", "raw"), default="run",
+    ap.add_argument("--central", choices=("run", "corr", "raw"), default="raw",
                     help="run  = sigma corretta con la parabola del singolo run "
                          "(nominale); corr = corretta con la parabola dell'energia; "
                          "raw = non corretta")
