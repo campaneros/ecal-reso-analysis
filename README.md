@@ -229,7 +229,7 @@ subtracted rather than carried:
 | term | how it is obtained |
 |---|---|
 | statistical | weighted variance of the per-run sigma/mu, `SE^2 = sum w (x - xbar)^2 / (sum w * (n_eff - 1))` with `n_eff = (sum w)^2 / sum w^2`. This already contains both the noise of the individual fits and the run-to-run spread. Where a point has a single run it is undefined and the fit error is used |
-| drift | subtracted as well, and **not** an error bar: run-to-run systematic on sigma, computed **energy by energy on the per-run sigma values of the selection in use**: the extra error which, added in quadrature, makes the fit of those sigmas to a constant give chi2/ndf = 1 (the PDG scale-factor method). With a single run there is no spread and it is zero by construction. It must not be imported from another selection: cutting on the hodoscope keeps a different set of runs, so the drift differs -- at 340 ohm 250 GeV it is 0.022 with the centroid cut and 0.000 with the hodoscope one |
+| drift | subtracted as well, and **not** an error bar: run-to-run systematic on sigma, computed **energy by energy on the per-run sigma values of the selection in use**: the extra error which, added in quadrature, makes the fit of those sigmas to a constant give chi2/ndf = 1 (the PDG scale-factor method). It must not be imported from another selection: cutting on the hodoscope keeps a different set of runs, so the drift differs. See **Reading a drift of zero** below |
 | centroid | how much the answer depends on **how** the response surface is estimated: the difference between correcting with the parabola of each run and correcting with the parabola of the energy, `uniformita_maps.py`. Median 0.0006 percentage points, and exactly zero on the six points with a single run, where the two maps coincide by construction |
 
 Typical sizes, as medians over the points of each resistance:
@@ -240,13 +240,58 @@ Typical sizes, as medians over the points of each resistance:
 | 400 ohm | 0.009 | 0.020 | 0.0007 |
 | 500 ohm | 0.011 | 0.018 | 0.0042 |
 
-**A caveat on the chi2.** After the run exclusions, eight of the twelve energies at
-340 ohm have a single run. There the drift systematic is zero by construction and the
+**A caveat on the chi2.** After the run exclusions, eight of the eleven energies at
+340 ohm that survive the hodoscope selection have a single run. There the drift systematic is zero by construction and the
 error bar is purely statistical, so the chi2 of the N/S/C fit is not a measure of
 goodness of fit: it is dominated by a point-to-point scatter that nothing is left to
 estimate. `sistematica_risoluzione.py --fallback` exists to assign those points the
 systematic measured where two or more runs are available; whether to apply it is an
 open choice.
+
+**Are the per-run error bars right?** The whole drift depends on them, so they were
+checked against a bootstrap — `dcb_error_check.py`. The bar on each per-run sigma/mu is
+the HESSE error of the double-CB fit propagated to the ratio,
+`e = (sigma/mu) * sqrt((d_sigma/sigma)^2 + (d_peak/peak)^2)`. It comes out three to
+four times larger than `sigma/sqrt(2N)`, but that reference does not apply here: it is
+the error on the RMS of a Gaussian from an unbinned ML fit, whereas sigma is the width
+of the *core* of a seven-parameter double CB fitted by binned least squares and
+correlated with the four tail parameters. Resampling the events of a run and refitting
+gives, as the median of HESSE / bootstrap:
+
+| point | runs | median ratio |
+|---|---|---|
+| 340 ohm 225 GeV | 7 | 1.00 |
+| 400 ohm 80 GeV | 10 | 0.72 |
+| 500 ohm 60 GeV | 3 | 0.83 |
+
+The bars are right on average and, where they are not, they are **smaller** than the
+truth by 20-30 %. The direction matters: too-small errors make the chi2 too large and
+therefore the drift too large, so the points where the drift comes out zero would come
+out zero with the correct errors as well.
+
+**Reading a drift of zero.** A drift term equal to zero means one of two different
+things, and the CSV keeps them apart through the `nrun_*` and `*_chi2` columns:
+
+* `nrun = 1` — the point has a single run, there is no run-to-run dispersion to
+  measure and the drift is undefined, not small. Eight of the eleven energies at
+  340 ohm are in this situation after the run exclusions;
+* `nrun > 1` and `chi2/ndf <= 1` — the per-run sigmas are already compatible with a
+  constant within their own errors, so the extra error needed to reach chi2/ndf = 1 is
+  exactly zero. This is what the PDG prescription gives, not a failure of it.
+
+The two cases are drawn differently in the lower panel of the resolution plot: a cross
+on the axis for a single run, an open square for a drift that came out zero.
+
+Where chi2/ndf is above 1 the drift is there and is usually the largest term at that
+point: 340 ohm 20 GeV chi2/ndf 1.85 gives 0.045, 400 ohm 40 GeV chi2/ndf 6.8 gives
+0.052, 500 ohm 30 GeV chi2/ndf 6.6 gives 0.045.
+
+The drift comes out **smaller with the hodoscope cut than with the centroid one**, and
+this is a consequence of the definition rather than a discrepancy: the hodoscope cut
+keeps roughly half the events, so the error on each per-run sigma grows by about
+sqrt(2), the chi2 against a constant falls by about a factor of two, and the excess
+scatter that the drift is meant to describe shrinks with it. The drift measures what
+is left over and above the statistical error, and that error is larger here.
 
 Two systematics that were **measured and found negligible**, and are therefore not
 carried: the granularity of the response map (grids of 12, 40 and 150 bins per side
@@ -263,15 +308,97 @@ amplitudes whose width is being measured. `resolution_hodo.py` repeats the analy
 with the position cut taken from the hodoscope, which is independent of the
 calorimeter.
 
-**The window needs no calibration.** It is the contiguous range around the maximum
-of the response profile where `<A_tot>` stays within `--tol` (default 0.5 %) of its
-plateau. x is the average of the two x planes over [-15, 0] mm, y is the second
-plane only over [0, 8] mm: the first y plane fires a single cluster in 42 % of events
-against 65 % for the second, below zero the y profile is jagged with no parabola, and
-above 8 mm some energies show a rise of up to 2 % that is not the crystal response.
-Only events with exactly one cluster in the planes used are kept, which costs a large
-fraction of the statistics; the fraction surviving is written to the output CSV point
-by point.
+**Which planes.** x is the average of the two x planes. y is taken from **y1**
+(`--yplane`, default y1). y2 fires a single cluster more often, 65 % of events against
+42 %, but that is efficiency and not quality: profiled against A_tot, y1 gives a clean
+parabola over its whole range while y2 is jagged below zero and usable only above it.
+Cutting on y1 needs no range restriction, keeps the window centred on the crystal
+instead of one-sided, and raises the fraction of events kept from about 35 % to about
+60 %. Only events with exactly one cluster in the planes used are kept; the surviving
+fraction is written to the output CSV point by point.
+
+**No range is imposed a priori** on either coordinate: the profile covers the whole
+range the data span, from the 0.5th to the 99.5th percentile.
+
+**Two ways of setting the window**, through `--window`:
+
+`plateau` (default) needs no fit: the window is the contiguous range around the
+maximum of the response profile where `<A_tot>` stays within `--tol`, 0.5 % by
+default, of its plateau value. Windows at different energies are then comparable by
+construction, because the response falls by the same amount inside each.
+
+`parabola` takes the window as vertex +- `--half` * W, with the vertex of the response
+parabola as the centre and W the crystal width from the ratio of the curvatures in
+millimetres and in crystal units.
+
+The fit range is not chosen, it is **scanned**. A single fixed range cannot work: the
+response is parabolic only near the crystal centre, so a fit over everything the data
+span puts the lever arm on the tails and the vertex follows them; but a fixed window
+around the maximum cannot be right at every energy either, because the beam moves --
+the x vertex runs from -3 mm at 20 GeV to -10 mm at 175 GeV -- and at the top energies
+part of the crystal falls outside the hodoscope acceptance altogether. So the profile
+is fitted over `[peak - h, peak + h]` for every h in `SCAN_HALVES` = 5, 6, 7, 8, 9,
+10 mm, **independently in x and in y**, and the answer is accepted only if it does not
+depend on h:
+
+| check | threshold | what it catches |
+|---|---|---|
+| fits with a maximum inside their own range | at least 4 of 6 | profiles with no maximum in the acceptance |
+| excursion of the vertex over the scan | <= 1.5 mm | a vertex dragged by the tails; the window is only +- 0.2 W ~ 5 mm, so 1.5 mm is already a third of it |
+| relative spread of W over the scan | <= 15 % | a curvature that is not the crystal's |
+| median W | 12 to 40 mm | a runaway fit; W comes out 21-28 mm everywhere it is accepted, against the 24.2 mm crystal pitch |
+| window inside the range the data span | -- | a cut that would fall outside the hodoscope |
+
+The vertex and W returned are the medians over the scan, which is more stable than any
+single fit. Where the checks fail **there is no parabola to be found** at that energy
+in that view: the point is dropped from the parabola chain with the reason printed,
+rather than fitted anyway. That is the hodoscope acceptance limit, and it is drawn as
+such -- red title and the reason underneath -- by `hodo_windows.py`.
+
+With `--runset standard` and `--yplane y1` the scan fails on 5 of the 58 (resistance,
+energy, view) combinations, and they are exactly the physically suspect ones:
+
+| point | view | why |
+|---|---|---|
+| 340 ohm 250 GeV | x | vertex moves by 2.8 mm across the fit ranges |
+| 340 ohm 250 GeV | y | only 3 of 6 fit ranges give a maximum |
+| 340 ohm 275 GeV | y | the window falls outside the hodoscope acceptance |
+| 400 ohm 20 GeV | x | W = 9 mm, not a crystal |
+| 400 ohm 20 GeV | y | no curvature in crystal units available |
+
+Those energies do not get a parabola window. They are **not thrown away**: the window
+falls back to the plateau definition, which needs no fit, the `window` column of the
+CSV records it (`x+y-plateau`, `y-plateau`) and the point is drawn with a grey ring
+and the legend entry *no parabola: plateau window*. Dropping them would have made them
+vanish from the plot without saying why.
+
+**When no run has enough events.** The per-run fit needs 300 events. At **340 ohm
+250 GeV** the hodoscope cut keeps 846 events out of 50691, 2 %, spread over eight runs
+— about a hundred each — because the y window sits at `[+10.8, +14.5] mm`, against the
+edge of the acceptance: the beam is not on the part of the crystal the hodoscope sees.
+Rather than lose the point, the fit is then done **once on all the runs pooled**. The
+point comes out with the error of that single fit, the drift is undefined (there is no
+longer a run-to-run dispersion to measure), `nrun_* = 0` and `*_pooled = 1` record it,
+and it is drawn with a violet square and the legend entry *one pooled fit*. It is of
+course a point to treat with suspicion, which is why 250 GeV is in `--nofit-energies`
+by default.
+
+**Points excluded from the fit but kept in the plot.** `--nofit-energies`, 250 and
+275 GeV by default, are drawn as open markers and left out of the N/S/C fit. Every
+resolution figure is produced twice, once that way and once with all the points in the
+fit (`_allpoints`), for both chains, so that the weight of those two energies on the
+parameters can be read off directly:
+
+| chain | fit | 340 ohm | 400 ohm | 500 ohm |
+|---|---|---|---|---|
+| hodoscope | without 250, 275 | N 281 ± 8, S 2.88, chi2 56.4/8 | N 283 ± 3, S 0.00, chi2 50.4/5 | N 232 ± 19, S 3.25, chi2 18.1/5 |
+| hodoscope | all points | N 289 ± 8, S 2.62, chi2 93.7/10 | N 283 ± 3, S 0.01, chi2 51.7/6 | unchanged |
+| centroid | without 250, 275 | N 289 ± 6, S 3.19, chi2 79.6/8 | N 311 ± 3, S 0.01, chi2 47.0/5 | N 269 ± 8, S 2.25, chi2 125.1/5 |
+| centroid | all points | N 303 ± 5, S 2.75, chi2 196.2/10 | N 312 ± 3, S 0.00, chi2 47.6/6 | unchanged |
+
+Adding the two energies moves N by 8 MeV at 340 ohm with the hodoscope cut and by
+14 MeV with the centroid one, and roughly doubles the chi2 in both. 500 ohm has
+neither energy, so nothing changes there.
 
 **What differs between the two chains.** The position correction belongs only to the
 chain that cuts on the centroid: with the hodoscope the position does not enter the
@@ -290,17 +417,41 @@ centroid one has POS_eff removed, the hodoscope one still contains it. They must
 be compared directly.
 
 ```bash
-python3 resolution_hodo.py --base <data> --outdir plot/hodo --besdir plot/bes \
-    --plotdir plot --resistances 340 400 500 --exclude 340:275
+# the two window definitions, into two directories
+python3 resolution_hodo.py --base <data> --outdir plot/hodo_parab --besdir plot/bes \
+    --plotdir plot --resistances 340 400 500 --window parabola
+python3 resolution_hodo.py --base <data> --outdir plot/hodo_plateau --besdir plot/bes \
+    --plotdir plot --resistances 340 400 500 --window plateau
+
+# the picture behind each cut
+python3 hodo_windows.py --base <data> --outdir plot/hodo_parab --plotdir plot \
+    --resistances 340 400 500 --window parabola
+python3 hodo_windows.py --base <data> --outdir plot/hodo_plateau --plotdir plot \
+    --resistances 340 400 500 --window plateau
+
+# the calibration on its own, with the list of points that have no parabola
+python3 hodoscope_calib.py --base <data> --outdir plot/hodo_scan --plotdir plot \
+    --resistances 340 400 500
 ```
 
-Outputs: `resolution_hodo.csv` with both selections point by point, including the
-window limits, the response drop inside the window and the number of events kept;
-`resolution_hodo_<R>ohm.png` with the two cuts overlaid; and
-`resolution_terms_cen.png` / `resolution_terms_hodo.png` with the three resistances
-and the size of every subtracted term in the panel below.
+Outputs of `resolution_hodo.py`:
 
-`hodoscope_calib.py` measures the hodoscope offset and scale from the response
-(vertex of the parabola, and crystal width from the ratio of the curvatures in
-millimetres and in crystal units). It is not needed by the plateau cut and is kept as
-a separate check of the geometry.
+| file | what |
+|---|---|
+| `resolution_hodo.csv` | both selections point by point: which window was used, its limits, the response drop inside it, events kept, and for each chain sigma, statistical error, drift, the observed chi2/ndf of the per-run sigmas, and the corrected value |
+| `sigma_per_run.csv` | the individual per-run sigma/mu with its error, for both chains — the input of the drift |
+| `resolution_terms_<chain>.png` | the three resistances, with `--nofit-energies` drawn but left out of the fit, and the size of every subtracted term in the panel below |
+| `resolution_terms_<chain>_allpoints.png` | the same with **every** point inside the fit, so the weight of those energies on N, S and C is visible. Both variants are produced for **both** chains, centroid and hodoscope |
+| `drift_check_<chain>_<R>ohm.png` | one panel per energy: the per-run sigma/mu with their errors, the weighted mean, the drift band, and the observed chi2/ndf written in the title — green where it is already <= 1 and the drift is therefore zero, red where an extra error is needed, grey where there is a single run |
+
+Outputs of `hodo_windows.py`, per resistance and per view:
+
+| file | what it shows |
+|---|---|
+| `hodo_windows_<view>_<R>ohm.png` | one panel per energy, axes zoomed on the parabola: profile with errors, the accepted parabola over the range it was scanned on, the vertex, the window |
+| `hodo_windows_<view>_<R>ohm_full.png` | the same panels on a **common scale**, x from -15 to +15 mm and y from 0.90 up, so that panels can be compared with each other and the tails and the edges of the acceptance are visible |
+
+`hodoscope_calib.py` holds the shared machinery -- the response profile, the parabola
+scan and its acceptance checks -- and run on its own writes the offset and the scale
+per energy, `hodoscope_calib.csv`, plus a plot of the vertex and of W against energy
+with the rejected points drawn as open red markers.

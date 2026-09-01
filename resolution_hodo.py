@@ -14,10 +14,18 @@ millimetres, W the crystal width recovered from the ratio of the curvatures in
 millimetres and in crystal units. HALF is 0.2, the same half-window as the centroid
 cut.
 
-Planes: x is the average of the two x planes, y is the second plane only because the
-first is much less efficient. Only events with exactly one cluster in the planes used
-are kept, which costs a large fraction of the statistics -- that cost is reported per
-point, and it is the price of a cut that does not depend on the amplitudes.
+Planes: x is the average of the two x planes, y is y1 -- y2 fires a single cluster
+more often but its profile is jagged, y1 is parabolic over its whole range. Only
+events with exactly one cluster in the planes used are kept, which costs a large
+fraction of the statistics -- that cost is reported per point, and it is the price of
+a cut that does not depend on the amplitudes.
+
+Two ways of setting the window, --window:
+  parabola  vertex of the response parabola +- half * W, with the fit range scanned
+            and the answer accepted only if it does not depend on the range. Where no
+            parabola survives the scan the energy is dropped and the reason printed.
+  plateau   the contiguous range around the maximum where the response stays within
+            --tol of it. No calibration at all, and no parabola needed.
 
 From there the chain is the usual one: double-CB fit per run, weighted mean of the
 per-run sigma/peak, then BES and synchrotron subtracted in quadrature.
@@ -39,48 +47,13 @@ from iminuit.cost import LeastSquares
 import runsets
 from uniformita_pos import fit_dcb, rel, wmean, wscatter, design, VERA, A_TOT_MIN
 from drift_dcb_all import syst_for_unit_chi2
-from hodoscope_calib import hodo_xy, FILES, parab, crystal_curvature
+from hodoscope_calib import (hodo_xy, FILES, crystal_curvature, response_profile,
+                             parabola_scan, COORD)
 
 SYNC_C = 1.92e-7
 ETA0, PHI0, SEL = 18., 6., 0.2
 
-
-PARAB_HALF = 8.              # semi-ampiezza del fit di parabola attorno al massimo
-W_MIN, W_MAX = 12., 40.      # larghezza di cristallo accettabile [mm]
-YSEARCH = (-6., 11.)         # range in cui cercare il plateau in y2
 PLATEAU_TOL = 0.005          # frazione sotto il massimo che conta ancora come piatta
-
-
-def profile_peak(h, at, lo=None, hi=None, nb=40, nmin=150):
-    """Position of the smoothed maximum of the response profile.
-
-    Used to centre the parabola fit: fitting over the whole range the data span puts
-    most of the lever arm on the tails, where the response falls faster than a
-    parabola, and the vertex ends up wherever the tails pull it -- in one case at
-    -160 mm, outside the data. Locating the maximum first and fitting +- PARAB_HALF
-    around it keeps the fit on the part of the profile that is actually parabolic.
-    """
-    m = np.isfinite(h)
-    if lo is not None:
-        m &= h > lo
-    if hi is not None:
-        m &= h < hi
-    if m.sum() < 3000:
-        return None
-    e = np.linspace(np.percentile(h[m], 0.5), np.percentile(h[m], 99.5), nb + 1)
-    i = np.clip(np.digitize(h[m], e) - 1, 0, nb - 1)
-    xs, ys = [], []
-    for k in range(nb):
-        q = i == k
-        if q.sum() < nmin:
-            continue
-        xs.append(h[m][q].mean()); ys.append(at[m][q].mean())
-    if len(xs) < 6:
-        return None
-    ys = np.array(ys); xs = np.array(xs)
-    sm = np.convolve(ys, np.ones(3) / 3., mode="same")
-    sm[0], sm[-1] = ys[0], ys[-1]
-    return float(xs[int(np.argmax(sm))])
 
 
 def window_from_response(h, at, tol, lo=None, hi=None, nb=40, nmin=150):
@@ -93,13 +66,11 @@ def window_from_response(h, at, tol, lo=None, hi=None, nb=40, nmin=150):
     its plateau value. Nothing here uses the centroid, so the selection does not
     depend on the amplitudes whose width is being measured.
 
-    In x no range is imposed: the profile covers the whole range the data span, from
-    the 0.5th to the 99.5th percentile, and the window is set only by where the
-    response is flat. In y the search is restricted to YSEARCH, because outside it the
-    y2 profile is not a response curve -- it jumps by a percent from bin to bin with
-    no shape -- and the plateau search locks onto a fluctuation: left free it puts the
-    80 GeV window at [-15.2, -13.8] mm with 1 % of the events and the 250 GeV one at
-    [+10.0, +13.7].
+    No range is imposed in either view: the profile covers the whole range the data
+    span, from the 0.5th to the 99.5th percentile, and the window is set only by where
+    the response is flat. That is safe on y1, whose profile is a clean response curve
+    over its whole range; on y2, which is jagged below zero, the plateau search would
+    lock onto a fluctuation instead.
 
     Returns (lo, hi, drop_pct, n) with drop_pct the response variation across the
     window, which is what makes windows at different energies comparable.
@@ -221,8 +192,13 @@ def main():
     ap.add_argument("--tol", type=float, default=PLATEAU_TOL,
                     help="how far below the maximum the response may fall inside the "
                          "hodoscope window; 0.005 means the plateau is kept to 0.5%%")
+    ap.add_argument("--yplane", choices=("y1", "y2"), default="y1",
+                    help="hodoscope y plane to cut on; y1 is the one with a clean response profile over its whole range")
     ap.add_argument("--exclude-runs", nargs="*", type=int, default=[])
-    ap.add_argument("--exclude", nargs="*", default=["340:275"])
+    ap.add_argument("--exclude", nargs="*", default=[],
+                    help="R:E points dropped entirely")
+    ap.add_argument("--nofit-energies", nargs="*", type=int, default=[250, 275],
+                    help="energies kept in the plot but left out of the N/S/C fit")
     runsets.add_argument(ap)
     a = ap.parse_args()
     drop, only = runsets.resolve(a.runset, a.exclude_runs)
@@ -242,11 +218,12 @@ def main():
                 continue
             arr = uproot.open(f)["h4_reco"].arrays(
                 ["run", "A_tot", "pos_eta", "pos_phi", "hodo_x1_nclusters", "hodo_x1_pos",
-                 "hodo_x2_nclusters", "hodo_x2_pos", "hodo_y2_nclusters", "hodo_y2_pos"],
+                 "hodo_x2_nclusters", "hodo_x2_pos", "hodo_y1_nclusters", "hodo_y1_pos",
+                 "hodo_y2_nclusters", "hodo_y2_pos"],
                 library="ak")
             run = ak.to_numpy(arr["run"]); at = ak.to_numpy(arr["A_tot"]).astype(float)
             pe = ak.to_numpy(arr["pos_eta"]); pp = ak.to_numpy(arr["pos_phi"])
-            x, y = hodo_xy(arr)
+            x, y = hodo_xy(arr, a.yplane)
             base = at > A_TOT_MIN
             if drop:
                 base &= ~np.isin(run, drop)
@@ -256,57 +233,61 @@ def main():
             # finestra dove la risposta e' piatta, senza calibrazione: nessun offset,
             # nessuna scala, nessun uso del centroide
             core = base & (np.abs(at / np.median(at[base]) - 1) < 0.10)
+            why, fallback = {}, []
             if a.window == "parabola":
                 # offset dal vertice della parabola di risposta, scala dal rapporto
-                # fra la curvatura in mm e quella in unita' di cristallo
+                # fra la curvatura in mm e quella in unita' di cristallo. Il range di
+                # fit non e' fissato: viene scansionato, e la parabola si accetta solo
+                # se vertice e W non dipendono dal range (vedi hodoscope_calib.py).
                 wx = wy = None
-                for tag, v, rng, coord in (("x", x, (None, None), "pos_eta"),
-                                           ("y", y, YSEARCH, "pos_phi")):
-                    vv = v[core]
-                    pk = profile_peak(vv, at[core], rng[0], rng[1])
-                    if pk is None:
+                for tag, v in (("x", x), ("y", y)):
+                    pr = response_profile(v[core], at[core])
+                    sc = parabola_scan(*(pr if pr else (None, None, None)),
+                                       cry.get((E, dict(COORD)[tag])), a.half)
+                    why[tag] = "" if sc["ok"] else sc["why"]
+                    if not sc["ok"]:
                         continue
-                    # intervallo di fit centrato sul massimo, non su tutto il range
-                    lo = pk - PARAB_HALF
-                    hi = pk + PARAB_HALF
-                    if rng[0] is not None:
-                        lo = max(lo, rng[0])
-                    if rng[1] is not None:
-                        hi = min(hi, rng[1])
-                    q = parab(vv, at[core], lo, hi)
-                    cc = cry.get((E, coord))
-                    if q is None or cc is None or not (q[1] < 0 and cc < 0):
-                        continue
-                    W = float(np.sqrt(cc / q[1]))
-                    # guardie: il vertice deve cadere dentro l'intervallo su cui la
-                    # parabola e' stata fittata, e W deve essere compatibile con un
-                    # cristallo. Senza, un profilo quasi piatto manda il vertice a
-                    # -160 mm e W a centinaia di mm, e la finestra finisce fuori dai
-                    # dati -- e' quello che succedeva a 500 ohm 80 GeV, dove il
-                    # taglio lasciava zero eventi
-                    if not (lo <= q[0] <= hi) or not (W_MIN <= W <= W_MAX):
-                        continue
-                    w = (q[0] - a.half * W, q[0] + a.half * W, 0., 0)
+                    w = (sc["x0"] - a.half * sc["W"], sc["x0"] + a.half * sc["W"],
+                         0., 0)
                     if tag == "x":
                         wx = w
                     else:
                         wy = w
+                # dove la parabola non esiste il punto non si butta via: si ricade
+                # sulla finestra di plateau, che non ha bisogno di nessun fit, e il
+                # punto resta nel grafico marcato come tale. Buttarlo lo farebbe
+                # sparire dal plot senza dire perche'
+                if wx is None:
+                    wx = window_from_response(x[core], at[core], a.tol)
+                    fallback.append("x")
+                if wy is None:
+                    wy = window_from_response(y[core], at[core], a.tol)
+                    fallback.append("y")
             else:
                 wx = window_from_response(x[core], at[core], a.tol)
-                wy = window_from_response(y[core], at[core], a.tol, *YSEARCH)
+                wy = window_from_response(y[core], at[core], a.tol)
             if wx is None or wy is None:
-                print(f"  {R} ohm {E:>4} GeV: plateau non trovato, salto"); continue
+                miss = ", ".join(f"{t}: {why[t]}" for t in "xy" if why.get(t)) \
+                       or "plateau non trovato"
+                print(f"  {R} ohm {E:>4} GeV: nessuna finestra ({miss}), salto")
+                continue
+            if fallback:
+                print(f"  {R} ohm {E:>4} GeV: niente parabola in "
+                      f"{'+'.join(fallback)} ({'; '.join(why[t] for t in fallback)}), "
+                      f"finestra dal plateau")
             cut_h = (base & np.isfinite(x) & np.isfinite(y)
                      & (x >= wx[0]) & (x <= wx[1]) & (y >= wy[0]) & (y <= wy[1]))
             if cut_h.sum() < 500:
                 print(f"  {R} ohm {E:>4} GeV: solo {cut_h.sum()} eventi dopo il taglio hodo, salto")
                 continue
             out = dict(resistance=R, energy=E, energy_true=VERA.get(E, float(E)),
+                       window="+".join(fallback) + "-plateau" if fallback
+                              else a.window,
                        n_centroid=int(cut_c.sum()), n_hodo=int(cut_h.sum()),
                        x_lo=wx[0], x_hi=wx[1], x_drop=wx[2], n_x=wx[3],
                        y_lo=wy[0], y_hi=wy[1], y_drop=wy[2], n_y=wy[3])
             for tag, m in (("cen", cut_c), ("hodo", cut_h)):
-                vals, errs, raws = [], [], []
+                vals, errs, raws, rns = [], [], [], []
                 for r in sorted(int(v) for v in np.unique(run[m])):
                     q = m & (run == r)
                     if q.sum() < 300:
@@ -329,16 +310,39 @@ def main():
                         continue
                     v, e = rel(fc)
                     vals.append(v); errs.append(e); raws.append(rel(f0)[0])
+                    rns.append(r)
                 # pesi 1/sigma^2, come chiesto: l'errore statistico e' la sigma della
                 # sigma dalla varianza pesata con quei pesi; dove c'e' un solo run non
                 # e' definita e si usa l'errore della media pesata
+                # Dove nessun run singolo arriva a NMIN eventi il punto non si perde:
+                # si fa UN fit cumulativo su tutti i run insieme. Succede a 340 ohm
+                # 250 GeV, dove il taglio sull'odoscopio lascia 846 eventi su 8 run,
+                # cioe' un centinaio per run. Il punto esce con l'errore del fit, il
+                # drift resta indefinito (non c'e' piu' una dispersione fra run da
+                # misurare) e la colonna nrun_* vale 0 per segnalarlo.
+                pooled = False
+                if not vals and m.sum() >= 500:
+                    f0 = fit_dcb(at[m], E, R)
+                    if f0 is not None:
+                        if tag == "cen":
+                            ac = correct_response(at[m], (pe - ETA0)[m], (pp - PHI0)[m],
+                                                  (f0["lo"], f0["hi"]))
+                            fc = fit_dcb(ac, E, R)
+                        else:
+                            fc = f0
+                        if fc is not None:
+                            v, e = rel(fc)
+                            vals, errs, raws, rns = [v], [e], [rel(f0)[0]], [0]
+                            pooled = True
+                out[tag + "_pooled"] = int(pooled)
                 wts = [1.0 / (e * e) if e > 0 else 0.0 for e in errs]
                 if not vals:
                     for k, v in ((tag, np.nan), (tag + "_stat", np.nan),
                                  (tag + "_drift", 0.), (tag + "_pos", 0.),
-                                 (tag + "_err", np.nan)):
+                                 (tag + "_chi2", np.nan), (tag + "_err", np.nan)):
                         out[k] = v
                     out["nrun_" + tag] = 0
+                    out[tag + "_runs"] = []
                     continue
                 mu, er = wmean(vals, errs, wts)
                 sc = wscatter(vals, wts)
@@ -358,13 +362,23 @@ def main():
                 # selezione, non importato da quella col centroide. E' l'errore
                 # aggiuntivo che porta a chi2/ndf = 1 il fit delle sigma per run a
                 # una costante; con un solo run non c'e' dispersione ed e' zero.
-                dr = 0.
+                # chi2 osservato PRIMA di aggiungere la sistematica: e' quello che
+                # distingue "drift zero perche' c'e' un solo run" da "drift zero
+                # perche' le sigma per run sono gia' compatibili fra loro". Con il
+                # taglio sull'odoscopio gli eventi per run sono circa la meta', gli
+                # errori per run crescono di sqrt(2), il chi2 cala di un fattore 2 e
+                # il drift si riduce di conseguenza: non e' un bug, e' la definizione.
+                dr, c0 = 0., np.nan
                 if len(vals) > 1:
                     q = syst_for_unit_chi2(np.array(vals), np.array(errs))
                     dr = float(q[0]) if np.isfinite(q[0]) else 0.
+                    c0 = float(q[1])
                 out[tag + "_drift"] = dr
+                out[tag + "_chi2"] = c0
                 out[tag + "_err"] = math.hypot(est, dr)
-                out["nrun_" + tag] = len(vals)
+                out["nrun_" + tag] = 0 if pooled else len(vals)
+                # sigma per run, servono al plot di controllo del drift
+                out[tag + "_runs"] = list(zip(rns, vals, errs))
             b = bes.get(E, 0.); syn = SYNC_C * out["energy_true"] ** 2.5
             out["bes"] = b; out["sync"] = syn
             for tag in ("cen", "hodo"):
@@ -383,10 +397,10 @@ def main():
 
     if not rows:
         return
-    cols = ("resistance,energy,energy_true,n_centroid,n_hodo,nrun_cen,nrun_hodo,"
+    cols = ("resistance,energy,energy_true,window,n_centroid,n_hodo,nrun_cen,nrun_hodo,"
             "x_lo,x_hi,x_drop,n_x,y_lo,y_hi,y_drop,n_y,bes,sync,"
-            "cen,cen_stat,cen_drift,cen_pos,cen_err,cen_corr,"
-            "hodo,hodo_stat,hodo_drift,hodo_pos,hodo_err,hodo_corr")
+            "cen,cen_stat,cen_drift,cen_chi2,cen_pos,cen_err,cen_corr,cen_pooled,"
+            "hodo,hodo_stat,hodo_drift,hodo_chi2,hodo_pos,hodo_err,hodo_corr,hodo_pooled")
     p = os.path.join(a.outdir, "resolution_hodo.csv")
     with open(p, "w") as fh:
         fh.write(cols + "\n")
@@ -395,66 +409,172 @@ def main():
                               for c in cols.split(",")) + "\n")
     print("->", p)
 
+    p = os.path.join(a.outdir, "sigma_per_run.csv")
+    with open(p, "w") as fh:
+        fh.write("resistance,energy,chain,run,sigma_pct,err_pct\n")
+        for r in rows:
+            for tag in ("cen", "hodo"):
+                for rn, v, e in r.get(tag + "_runs", []):
+                    fh.write(f"{r['resistance']},{r['energy']},{tag},{rn},"
+                             f"{v:.6g},{e:.6g}\n")
+    print("->", p)
+
     Rs = [R for R in (340, 400, 500) if any(r["resistance"] == R for r in rows)]
+
+    # ---- controllo del drift, energia per energia -------------------------
+    # Un pannello per energia: le sigma dei singoli run con il loro errore, la media
+    # pesata, e il chi2/ndf del fit a una costante PRIMA di aggiungere la sistematica.
+    # Il drift e' l'errore in piu' che porta quel chi2/ndf a 1: dove il chi2/ndf e'
+    # gia' <= 1 il drift e' zero perche' non serve niente, e il pannello lo mostra.
     for tag, lab in (("cen", "centroid"), ("hodo", "hodoscope")):
-        fig, axs = plt.subplots(2, len(Rs), figsize=(6.4 * len(Rs), 10), sharex=True,
-                                gridspec_kw=dict(height_ratios=[2, 1]), squeeze=False)
-        for j, R in enumerate(Rs):
-            q = [r for r in rows if r["resistance"] == R]
-            x = np.array([r["energy_true"] for r in q])
-            raw = np.array([r[tag] for r in q])
-            y = np.array([r[tag + "_corr"] for r in q])
-            e = np.array([r[tag + "_err"] for r in q])
-            bes = np.array([r["bes"] for r in q]); syn = np.array([r["sync"] for r in q])
-            pos = np.array([r.get(tag + "_pos", 0.) for r in q])
-            dri = np.array([r.get(tag + "_drift", 0.) for r in q])
-            ax, ax2 = axs[0][j], axs[1][j]
-            ax.plot(x, raw, "o-", ms=6, color="0.35", label="$\\sigma/\\mu$")
-            ax.errorbar(x, y, yerr=e, fmt="^-", ms=7.5, color="C3", capsize=3,
-                        label="$-$ BES $-$ sync" + (" $-$ POS$_{eff}$" if tag == "cen" else "")
-                              + " $-$ drift")
-            g = np.isfinite(y) & (y > 0) & (e > 0)
-            if g.sum() >= 4:
-                mi = Minuit(LeastSquares(x[g], y[g], e[g], reso), N=0.3, S=3., C=0.3)
-                for k in "NSC":
-                    mi.limits[k] = (0, None)
-                if R == 500:
-                    mi.values["C"] = 0.300; mi.fixed["C"] = True
-                mi.migrad(); mi.hesse()
-                xs = np.linspace(x[g].min() * .9, x[g].max() * 1.05, 300)
-                ax.plot(xs, reso(xs, *mi.values), "--", lw=2.2, color="darkviolet",
-                        label="fit  $N/E \\oplus S/\\sqrt{E} \\oplus C$")
-                nd = int(g.sum()) - (2 if R == 500 else 3)
-                ax.text(.97, .95,
-                        f"$N$ {1000*mi.values['N']:6.0f} $\\pm$ {1000*mi.errors['N']:.0f} MeV\n"
-                        f"$S$ {mi.values['S']:6.2f} $\\pm$ {mi.errors['S']:.2f} %\n"
-                        f"$C$ {mi.values['C']:6.3f}" +
-                        (" % (FIXED)" if R == 500 else f" $\\pm$ {mi.errors['C']:.3f} %") +
-                        f"\n$\\chi^2$/ndf {mi.fval:6.1f} / {nd}",
-                        transform=ax.transAxes, ha="right", va="top", fontsize=9.5,
-                        family="monospace", bbox=dict(fc="white", ec="darkviolet", pad=6))
-            ax.set_title(f"{R} $\\Omega$", fontsize=12, fontweight="bold")
-            ax.set_ylabel("$\\sigma/E$  [%]"); ax.grid(alpha=.3); ax.legend(fontsize=8)
-            ax.set_ylim(0, float(np.nanmax(raw) * 1.08))
-            ax2.plot(x, raw, "o-", ms=5, color="0.35", label="$\\sigma/\\mu$")
-            ax2.plot(x, bes, "D-.", ms=5, color="C1", label="BES")
-            ax2.plot(x, syn, "^-", ms=5, color="C4", label="synchrotron")
-            if tag == "cen":
-                ax2.plot(x, np.where(pos > 0, pos, np.nan), "v-", ms=5, color="C2",
-                         label="POS$_{eff}$")
-            ax2.plot(x, np.where(dri > 0, dri, np.nan), "s--", ms=5, color="C0",
-                     label="drift")
-            t = np.concatenate([raw, bes, syn, pos[pos > 0], dri[dri > 0], [1e-3]])
-            ax2.set_yscale("log"); ax2.set_ylim(float(t[t > 0].min() * .4), float(t.max() * 2.5))
-            ax2.set_xlabel("True beam energy [GeV]")
-            ax2.set_ylabel("size of each term  [%]")
-            ax2.grid(alpha=.3, which="both"); ax2.legend(fontsize=8)
-        fig.suptitle(f"cut on the {lab}   $\\quad$   $A_{{tot}} > {A_TOT_MIN:.0f}$ ADC",
-                     fontsize=12)
-        fig.tight_layout()
-        p = os.path.join(a.outdir, f"resolution_terms_{tag}.png")
-        fig.savefig(p, dpi=150); plt.close(fig)
-        print("->", p)
+        for R in Rs:
+            q = [r for r in rows if r["resistance"] == R and r.get(tag + "_runs")]
+            if not q:
+                continue
+            nc = 4; nr = int(np.ceil(len(q) / nc))
+            fig, axs = plt.subplots(nr, nc, figsize=(4.4 * nc, 3.2 * nr), squeeze=False)
+            for k, r in enumerate(q):
+                ax = axs[k // nc][k % nc]
+                pr = r[tag + "_runs"]
+                xs = np.arange(len(pr))
+                ys = np.array([v for _, v, _ in pr])
+                es = np.array([e for _, _, e in pr])
+                mu, dr = r[tag], r.get(tag + "_drift", 0.)
+                c0 = r.get(tag + "_chi2", np.nan)
+                ax.errorbar(xs, ys, yerr=es, fmt="o", ms=5, capsize=3, color="C0")
+                ax.axhline(mu, color="C3", lw=1.6,
+                           label=f"weighted mean {mu:.4f}")
+                if dr > 0:
+                    ax.axhspan(mu - dr, mu + dr, color="C3", alpha=.15,
+                               label=f"$\\pm$ drift {dr:.4f}")
+                ax.set_xticks(xs)
+                ax.set_xticklabels([str(rn) for rn, _, _ in pr], rotation=90,
+                                   fontsize=6)
+                ndf = len(pr) - 1
+                if ndf < 1:
+                    txt = "1 run: no drift to measure"
+                    col = "0.4"
+                elif dr > 0:
+                    txt = (f"$\\chi^2$/ndf {c0:.2f} ({ndf} ndf) $>$ 1  "
+                           f"$\\rightarrow$ drift {dr:.4f}")
+                    col = "C3"
+                else:
+                    txt = (f"$\\chi^2$/ndf {c0:.2f} ({ndf} ndf) $\\leq$ 1  "
+                           f"$\\rightarrow$ drift 0")
+                    col = "C2"
+                ax.set_title(f"{r['energy']} GeV\n{txt}", fontsize=8.5, color=col,
+                             linespacing=1.5)
+                ax.set_ylabel("$\\sigma/\\mu$  [%]", fontsize=8)
+                ax.tick_params(axis="y", labelsize=7); ax.grid(alpha=.3, axis="y")
+                ax.legend(fontsize=6.5, loc="best")
+            for k in range(len(q), nr * nc):
+                axs[k // nc][k % nc].set_axis_off()
+            fig.suptitle(f"{R} $\\Omega$ — cut on the {lab} — per-run $\\sigma/\\mu$ "
+                         f"against a constant.  green: already compatible, drift = 0.  "
+                         f"red: extra error needed", fontsize=11)
+            fig.tight_layout(rect=(0, 0, 1, 0.985))
+            p = os.path.join(a.outdir, f"drift_check_{tag}_{R}ohm.png")
+            fig.savefig(p, dpi=130); plt.close(fig)
+            print("->", p)
+
+    # due versioni dello stesso grafico: una con tutti i punti dentro al fit, una in
+    # cui --nofit-energies restano disegnati ma fuori dal fit. Cosi' si vede subito
+    # quanto pesano quei punti sui parametri
+    for tag, lab in (("cen", "centroid"), ("hodo", "hodoscope")):
+      for allfit in (False, True):
+          fig, axs = plt.subplots(2, len(Rs), figsize=(6.4 * len(Rs), 10), sharex=True,
+                                  gridspec_kw=dict(height_ratios=[2, 1]), squeeze=False)
+          for j, R in enumerate(Rs):
+              q = [r for r in rows if r["resistance"] == R]
+              x = np.array([r["energy_true"] for r in q])
+              raw = np.array([r[tag] for r in q])
+              y = np.array([r[tag + "_corr"] for r in q])
+              e = np.array([r[tag + "_err"] for r in q])
+              bes = np.array([r["bes"] for r in q]); syn = np.array([r["sync"] for r in q])
+              pos = np.array([r.get(tag + "_pos", 0.) for r in q])
+              dri = np.array([r.get(tag + "_drift", 0.) for r in q])
+              ax, ax2 = axs[0][j], axs[1][j]
+              ax.plot(x, raw, "o-", ms=6, color="0.35", label="$\\sigma/\\mu$")
+              ax.errorbar(x, y, yerr=e, fmt="^-", ms=7.5, color="C3", capsize=3,
+                          alpha=.9, label="$-$ BES $-$ sync" + (" $-$ POS$_{eff}$" if tag == "cen" else "")
+                                + " $-$ drift")
+              infit = (np.ones(len(q), bool) if allfit else
+                       ~np.isin([r["energy"] for r in q], a.nofit_energies))
+              g = np.isfinite(y) & (y > 0) & (e > 0) & infit
+              shown = np.isfinite(y) & (y > 0) & (e > 0) & ~infit
+              if shown.any():
+                  ax.errorbar(x[shown], y[shown], yerr=e[shown], fmt="^", ms=7.5,
+                              mfc="none", color="C3", capsize=3, label="not in the fit")
+              pl = np.array([bool(r.get(tag + "_pooled", 0)) for r in q])
+              pl &= np.isfinite(y) & (y > 0)
+              if pl.any():
+                  ax.plot(x[pl], y[pl], "s", ms=14, mfc="none", mew=1.4, color="C4",
+                          label="one pooled fit (no run has enough events)")
+              fb = np.array([str(r.get("window", "")).endswith("-plateau") for r in q])
+              fb &= np.isfinite(y) & (y > 0)
+              if fb.any():
+                  ax.plot(x[fb], y[fb], "o", ms=13, mfc="none", mew=1.4, color="0.25",
+                          label="no parabola: plateau window")
+              if g.sum() >= 4:
+                  mi = Minuit(LeastSquares(x[g], y[g], e[g], reso), N=0.3, S=3., C=0.3)
+                  for k in "NSC":
+                      mi.limits[k] = (0, None)
+                  if R == 500:
+                      mi.values["C"] = 0.300; mi.fixed["C"] = True
+                  mi.migrad(); mi.hesse()
+                  xs = np.linspace(x[g].min() * .9, x[g].max() * 1.05, 300)
+                  ax.plot(xs, reso(xs, *mi.values), "--", lw=2.2, color="darkviolet",
+                          label="fit  $N/E \\oplus S/\\sqrt{E} \\oplus C$")
+                  nd = int(g.sum()) - (2 if R == 500 else 3)
+                  ax.text(.97, .95,
+                          f"$N$ {1000*mi.values['N']:6.0f} $\\pm$ {1000*mi.errors['N']:.0f} MeV\n"
+                          f"$S$ {mi.values['S']:6.2f} $\\pm$ {mi.errors['S']:.2f} %\n"
+                          f"$C$ {mi.values['C']:6.3f}" +
+                          (" % (FIXED)" if R == 500 else f" $\\pm$ {mi.errors['C']:.3f} %") +
+                          f"\n$\\chi^2$/ndf {mi.fval:6.1f} / {nd}",
+                          transform=ax.transAxes, ha="right", va="top", fontsize=9.5,
+                          family="monospace", bbox=dict(fc="white", ec="darkviolet", pad=6))
+              ax.set_title(f"{R} $\\Omega$", fontsize=12, fontweight="bold")
+              ax.set_ylabel("$\\sigma/E$  [%]"); ax.grid(alpha=.3); ax.legend(fontsize=8)
+              if np.isfinite(np.nanmax(raw)):
+                  ax.set_ylim(0, float(np.nanmax(raw) * 1.08))
+              ax2.plot(x, raw, "o-", ms=5, color="0.35", label="$\\sigma/\\mu$")
+              ax2.plot(x, bes, "D-.", ms=5, color="C1", label="BES")
+              ax2.plot(x, syn, "^-", ms=5, color="C4", label="synchrotron")
+              if tag == "cen":
+                  ax2.plot(x, np.where(pos > 0, pos, np.nan), "v-", ms=5, color="C2",
+                           label="POS$_{eff}$")
+              nr = np.array([r.get("nrun_" + tag, 0) for r in q])
+              ax2.plot(x, np.where(dri > 0, dri, np.nan), "s--", ms=5, color="C0",
+                       label="drift")
+              # dove il drift non c'e' si dice perche': un solo run (niente dispersione
+              # da misurare) oppure sigma per run gia' compatibili fra loro
+              lo2 = float(np.nanmin(np.concatenate([bes, syn, [1e-3]])))
+              m1 = (dri <= 0) & (nr <= 1)
+              mc = (dri <= 0) & (nr > 1)
+              if m1.any():
+                  ax2.plot(x[m1], np.full(m1.sum(), lo2), "x", ms=6, color="C0",
+                           label="drift n/a (1 run)")
+              if mc.any():
+                  ax2.plot(x[mc], np.full(mc.sum(), lo2), "s", ms=5, mfc="none",
+                           color="C0", label="drift = 0 ($\\chi^2$/ndf $\\leq$ 1)")
+              t = np.concatenate([raw, bes, syn, pos[pos > 0], dri[dri > 0], [1e-3]])
+              t = t[np.isfinite(t) & (t > 0)]
+              ax2.set_yscale("log")
+              if len(t):
+                  ax2.set_ylim(float(t.min() * .4), float(t.max() * 2.5))
+              ax2.set_xlabel("True beam energy [GeV]")
+              ax2.set_ylabel("size of each term  [%]")
+              ax2.grid(alpha=.3, which="both"); ax2.legend(fontsize=8)
+          fig.suptitle(f"cut on the {lab}   $\\quad$   $A_{{tot}} > {A_TOT_MIN:.0f}$ ADC"
+                       + ("   $\\quad$   all points in the fit" if allfit else
+                          "   $\\quad$   " + ", ".join(str(e) for e in a.nofit_energies)
+                          + " GeV shown but not fitted"), fontsize=12)
+          fig.tight_layout()
+          p = os.path.join(a.outdir,
+                           f"resolution_terms_{tag}{'_allpoints' if allfit else ''}.png")
+          fig.savefig(p, dpi=150); plt.close(fig)
+          print("->", p)
 
 
 if __name__ == "__main__":
