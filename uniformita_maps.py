@@ -216,8 +216,8 @@ def stage_collect(outdir, resistances):
         # the two coincide by construction and the systematic is zero: there is no
         # ambiguity to measure there. The per-resistance 'mean' variant stays in the
         # CSV as a diagnostic and does not enter the number.
-        sr, se = c["s_run"][0], c["s_energy"][0]
-        syst = abs(sr - se) if (np.isfinite(sr) and np.isfinite(se)) else np.nan
+        sr, se, sm = c["s_run"][0], c["s_energy"][0], c["s_mean"][0]
+        syst = abs(se - sm) if (np.isfinite(sm) and np.isfinite(se)) else np.nan # passing to the diff w.r.t. mean (Ruben)
         ce, cm = np.array(c["coef_energy"]), np.array(c["coef_mean"])
         r = dict(resistance=R, energy=E, energy_true=VERA.get(E, float(E)),
                  nrun=c["nrun"], nev=c["nev"], n_fallback=c["n_fallback"],
