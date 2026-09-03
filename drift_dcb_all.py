@@ -32,6 +32,7 @@ import re
 
 import numpy as np
 import uproot
+import awkward as ak
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -636,37 +637,85 @@ def mappe_perrun(eta, phi, atot, runs, bounds, energy, resistance, outdir, all_e
 
 # ----------------------------------------------------------------- analisi
 def analyse(path, energy, resistance, outdir, chunk_profile, drop_runs=(), only_runs=()):
+
+    cry_window = 3
+
     tree = uproot.open(path)["h4_reco"]
-    arr = tree.arrays(["run", "spill", "evt", "A_tot", "pos_eta", "pos_phi"], library="np")
+    arr = tree.arrays(
+        ["run", "spill", "evt", "A", "pos_eta", "pos_phi",
+         "sel_ieta", "sel_iphi"],
+        library="ak"
+    )
+
+    arr["sel_ieta"] = ak.values_astype(arr["sel_ieta"], np.int64)
+    arr["sel_iphi"] = ak.values_astype(arr["sel_iphi"], np.int64)
+
     if drop_runs or only_runs:
-        keep_run = ~np.isin(arr["run"], list(drop_runs))
+        keep_run = ~np.isin(ak.to_numpy(arr["run"]), list(drop_runs))
+
         if only_runs:
-            keep_run &= np.isin(arr["run"], list(only_runs))
+            keep_run &= np.isin(ak.to_numpy(arr["run"]), list(only_runs))
+
         if keep_run.sum() < len(keep_run):
-            print(f"       scartati {len(keep_run)-keep_run.sum()} eventi dei run "
-                  f"{sorted(set(arr['run'][~keep_run]))}", flush=True)
-        arr = {k: v[keep_run] for k, v in arr.items()}
+            print(
+                f"       scartati {len(keep_run)-keep_run.sum()} eventi dei run "
+                f"{sorted(set(ak.to_numpy(arr['run'])[~keep_run]))}",
+                flush=True
+            )
+
+        arr = arr[keep_run]
+
     # chronological order over ALL events (needed for the 2D maps)
-    o_all = np.lexsort((arr["evt"], arr["spill"], arr["run"]))
+    # chronological order over ALL events (needed for the 2D maps)
+    o_all = np.lexsort((
+        ak.to_numpy(arr["evt"]),
+        ak.to_numpy(arr["spill"]),
+        ak.to_numpy(arr["run"]),
+    ))
+
     amin = a_tot_min(energy, resistance)
-    sig = ((arr["A_tot"][o_all] > amin)
-           & (np.abs(arr["pos_eta"][o_all] - ETA0) < HALF)
-           & (np.abs(arr["pos_phi"][o_all] - PHI0) < HALF))
-    m_run = arr["run"][o_all][sig]
-    m_eta = arr["pos_eta"][o_all][sig]
-    m_phi = arr["pos_phi"][o_all][sig]
-    m_atot = arr["A_tot"][o_all][sig]
+
+    # cry_window = 3 -> ieta = 17,18,19 and iphi = 5,6,7
+
+    arr["A_total_chosen_matrix"] = ak.sum(
+        arr["A"] *
+        (abs(arr["sel_ieta"] - 18) < int((cry_window + 1) / 2)) *
+        (abs(arr["sel_iphi"] - 6) < int((cry_window + 1) / 2)),
+        axis=1
+    )
+
+    print(arr["A_total_chosen_matrix"] )
+
+    sig = (
+        (arr["A_total_chosen_matrix"][o_all] > amin)
+        & (abs(arr["pos_eta"][o_all] - ETA0) < HALF)
+        & (abs(arr["pos_phi"][o_all] - PHI0) < HALF)
+    )
+
+    m_run = arr["run"][o_all][sig].to_numpy()
+    m_eta = arr["pos_eta"][o_all][sig].to_numpy()
+    m_phi = arr["pos_phi"][o_all][sig].to_numpy()
+    m_atot = arr["A_total_chosen_matrix"][o_all][sig].to_numpy()
 
     # same events but WITHOUT the A_tot threshold: for the occupancy and the 1D plots
-    inbox = ((np.abs(arr["pos_eta"][o_all] - ETA0) < HALF)
-             & (np.abs(arr["pos_phi"][o_all] - PHI0) < HALF))
-    b_eta = arr["pos_eta"][o_all][inbox]
-    b_phi = arr["pos_phi"][o_all][inbox]
-    b_atot = arr["A_tot"][o_all][inbox]
-    b_run = arr["run"][o_all][inbox]
+    inbox = (
+        (abs(arr["pos_eta"][o_all] - ETA0) < HALF)
+        & (abs(arr["pos_phi"][o_all] - PHI0) < HALF)
+    )
 
-    keep = position_cut(arr["pos_eta"], arr["pos_phi"])
-    run, spill, evt, atot = (arr[k][keep] for k in ("run", "spill", "evt", "A_tot"))
+    b_eta = arr["pos_eta"][o_all][inbox].to_numpy()
+    b_phi = arr["pos_phi"][o_all][inbox].to_numpy()
+    b_atot = arr["A_total_chosen_matrix"][o_all][inbox].to_numpy()
+    b_run = arr["run"][o_all][inbox].to_numpy()
+
+    keep = position_cut(arr["pos_eta"].to_numpy(), arr["pos_phi"].to_numpy())
+
+    run = arr["run"][keep].to_numpy()
+    spill = arr["spill"][keep].to_numpy()
+    evt = arr["evt"][keep].to_numpy()
+    atot = arr["A_total_chosen_matrix"][keep].to_numpy()
+
+
     if len(atot) < 200:
         print(f"  [!] {energy} GeV: solo {len(atot)} eventi dopo il taglio, salto")
         return [], None
@@ -943,6 +992,7 @@ def main():
     for R in a.resistances:
         d = os.path.join(a.base, f"reco_{R}ohm")
         files = sorted(glob.glob(os.path.join(d, "*_merged.root")))
+
         if not files:
             print(f"[{R} ohm] nessun file in {d}, salto")
             continue

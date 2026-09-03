@@ -131,6 +131,7 @@ def main():
     SCAT = load_scatter(a.cache, "corr" if a.central != "raw" else "raw")
     MAPS = {}
     if os.path.exists(a.maps):
+        print("reading maps!!")
         for r in csv.DictReader(open(a.maps)):
             MAPS[(int(r["resistance"]), int(r["energy"]))] = {
                 k: (float(r[k]) if r[k] not in ("", "nan") else np.nan)
@@ -184,6 +185,9 @@ def main():
         else:
             efit = np.array([q["corr_err"] for q in u])
             esc = np.array([SCAT.get((R, e), np.nan) for e in Es])
+
+        print("efit, esc", efit, esc)
+
         # statistical error: weighted variance of the per-run sigmas when there is
         # more than one run (it already contains the fit error), else the fit error
         estat = np.where(np.isfinite(esc), np.maximum(efit, esc), efit)
