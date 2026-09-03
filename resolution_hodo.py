@@ -14,11 +14,11 @@ millimetres, W the crystal width recovered from the ratio of the curvatures in
 millimetres and in crystal units. HALF is 0.2, the same half-window as the centroid
 cut.
 
-Planes: x is the average of the two x planes, y is y1 -- y2 fires a single cluster
-more often but its profile is jagged, y1 is parabolic over its whole range. Only
-events with exactly one cluster in the planes used are kept, which costs a large
-fraction of the statistics -- that cost is reported per point, and it is the price of
-a cut that does not depend on the amplitudes.
+Planes: x is the average of the two x planes, y is y1 -- the two y planes are equally
+efficient, but y2's profile is jagged below zero while y1 is parabolic over its whole
+range. Only events with exactly one cluster in EACH plane used are kept -- x1, x2 and
+y1, all three -- which leaves about 35 % of the events. That cost is reported per
+point, and it is the price of a cut that does not depend on the amplitudes.
 
 Two ways of setting the window, --window:
   parabola  vertex of the response parabola +- half * W, with the fit range scanned
@@ -302,8 +302,10 @@ def main():
                         tails = fp["tails"]
 
                 def per_run(fix):
-                    """sigma/mu con il suo errore, e il picco con il suo, run per run"""
-                    V, Er, Rw, Pk, Ep, Rn = [], [], [], [], [], []
+                    """{run: (sigma/mu, suo errore, sigma grezza, picco, suo errore,
+                    eventi)} -- un dizionario, cosi' le due varianti del modello di fit
+                    si allineano per run anche se una di loro perde qualche fit"""
+                    o = {}
                     for r in sorted(int(u) for u in np.unique(run[m])):
                         q = m & (run == r)
                         if q.sum() < 300:
@@ -322,14 +324,18 @@ def main():
                         if fc is None:
                             continue
                         v, e = rel(fc)
-                        V.append(v); Er.append(e); Rw.append(rel(f0)[0])
-                        Pk.append(f0["peak"]); Ep.append(f0["err_peak"]); Rn.append(r)
-                    return V, Er, Rw, Pk, Ep, Rn
+                        o[r] = (v, e, rel(f0)[0], f0["peak"], f0["err_peak"],
+                                int(f0["nev"]))
+                    return o
 
-                vals, errs, raws, peaks, epeaks, rns = per_run(
-                    tails if a.tails == "fixed" else None)
-                # variante col modello alternativo, per la sistematica sul fit
-                alt = (per_run(tails)[0] if (a.tails == "both" and tails) else [])
+                free = per_run(tails if a.tails == "fixed" else None)
+                fixed = per_run(tails) if (a.tails == "both" and tails) else {}
+                rns = sorted(free)
+                vals = [free[r][0] for r in rns]; errs = [free[r][1] for r in rns]
+                raws = [free[r][2] for r in rns]
+                peaks = [free[r][3] for r in rns]; epeaks = [free[r][4] for r in rns]
+                nevs = [free[r][5] for r in rns]
+                alt = [fixed[r][0] for r in rns if r in fixed]
 
                 # Dove nessun run singolo arriva a 300 eventi il punto non si perde:
                 # si fa UN fit cumulativo su tutti i run insieme. Succede a 340 ohm
@@ -349,6 +355,7 @@ def main():
                             v, e = rel(fc)
                             vals, errs, raws, rns = [v], [e], [rel(f0)[0]], [0]
                             peaks, epeaks = [f0["peak"]], [f0["err_peak"]]
+                            nevs = [int(f0["nev"])]
                             pooled = True
                 out[tag + "_pooled"] = int(pooled)
                 # pesi 1/sigma^2, come chiesto: l'errore statistico e' la sigma della
@@ -377,9 +384,10 @@ def main():
                 # togliere, e' un'ambiguita' sulla misura, quindi va nella barra
                 ts = 0.
                 if alt:
-                    n = min(len(alt), len(errs))
-                    aw = [1.0 / (e * e) if e > 0 else 0.0 for e in errs[:n]]
-                    ma = wmean(alt[:n], errs[:n], aw)[0]
+                    k = [r for r in rns if r in fixed]
+                    ae = [free[r][1] for r in k]
+                    aw = [1.0 / (e * e) if e > 0 else 0.0 for e in ae]
+                    ma = wmean(alt, ae, aw)[0]
                     if np.isfinite(ma):
                         ts = abs(mu - ma)
                 out[tag + "_tails"] = ts
@@ -403,7 +411,10 @@ def main():
                 # il drift NON sta nella barra, si sottrae
                 out[tag + "_err"] = math.hypot(est, ts)
                 out["nrun_" + tag] = 0 if pooled else len(vals)
-                out[tag + "_runs"] = list(zip(rns, vals, errs, peaks, epeaks))
+                out[tag + "_runs"] = [
+                    dict(run=rn, nev=nv, sigma=v, err=e, peak=pk, err_peak=ep,
+                         sigma_fixed=(fixed[rn][0] if rn in fixed else np.nan))
+                    for rn, nv, v, e, pk, ep in zip(rns, nevs, vals, errs, peaks, epeaks)]
             b = bes.get(E, 0.); syn = SYNC_C * out["energy_true"] ** 2.5
             out["bes"] = b; out["sync"] = syn
             for tag in ("cen", "hodo"):
@@ -435,14 +446,94 @@ def main():
                               for c in cols.split(",")) + "\n")
     print("->", p)
 
-    p = os.path.join(a.outdir, "sigma_per_run.csv")
+    # ---- tabella delle sistematiche, una riga per (resistenza, energia, catena) ----
+    # Stessi numeri di resolution_hodo.csv ma in formato lungo e con il peso relativo
+    # di ogni contributo, cosi' si legge a colpo d'occhio quale domina dove.
+    scols = ("resistance", "energy", "energy_true", "chain", "window", "n_events",
+             "n_run", "pooled", "sigma_raw", "stat", "syst_tails", "err_total",
+             "bes", "sync", "pos_eff", "drift", "chi2_peak", "sigma_corr",
+             "bes_frac", "sync_frac", "pos_frac", "drift_frac",
+             "stat_frac", "tails_frac")
+    p = os.path.join(a.outdir, "systematics.csv")
     with open(p, "w") as fh:
-        fh.write("resistance,energy,chain,run,sigma_pct,err_pct,peak,err_peak\n")
+        fh.write(",".join(scols) + "\n")
         for r in rows:
             for tag in ("cen", "hodo"):
-                for rn, v, e, pk, ep in r.get(tag + "_runs", []):
-                    fh.write(f"{r['resistance']},{r['energy']},{tag},{rn},"
-                             f"{v:.6g},{e:.6g},{pk:.6g},{ep:.6g}\n")
+                v = r.get(tag, np.nan)
+                if not np.isfinite(v) or v <= 0:
+                    continue
+                d = dict(resistance=r["resistance"], energy=r["energy"],
+                         energy_true=r["energy_true"], chain=tag,
+                         window=r.get("window", a.window),
+                         n_events=r["n_centroid"] if tag == "cen" else r["n_hodo"],
+                         n_run=r.get("nrun_" + tag, 0),
+                         pooled=r.get(tag + "_pooled", 0),
+                         sigma_raw=v, stat=r.get(tag + "_stat", np.nan),
+                         syst_tails=r.get(tag + "_tails", 0.),
+                         err_total=r.get(tag + "_err", np.nan),
+                         bes=r["bes"], sync=r["sync"],
+                         pos_eff=r.get(tag + "_pos", 0.),
+                         drift=r.get(tag + "_drift", 0.),
+                         chi2_peak=r.get(tag + "_chi2", np.nan),
+                         sigma_corr=r.get(tag + "_corr", np.nan))
+                # peso di ogni contributo in percentuale della sigma misurata
+                for k, src in (("bes_frac", "bes"), ("sync_frac", "sync"),
+                               ("pos_frac", "pos_eff"), ("drift_frac", "drift"),
+                               ("stat_frac", "stat"), ("tails_frac", "syst_tails")):
+                    d[k] = 100. * d[src] / v if np.isfinite(d[src]) else np.nan
+                fh.write(",".join(f"{d[c]:.6g}" if isinstance(d[c], float) else str(d[c])
+                                  for c in scols) + "\n")
+    print("->", p)
+
+    # ---- tutto per RUN ----------------------------------------------------
+    # Il drift e' per energia per costruzione -- e' l'errore in piu' che rende
+    # compatibili fra loro i picchi dei run di quell'energia -- ma cio' che lo genera
+    # e' per run: lo scostamento del picco di ogni run dal picco medio. Qui ci sono
+    # entrambi: le quantita' misurate run per run, e accanto i termini di energia a
+    # cui contribuiscono, cosi' si vede quale run tira il drift.
+    rcols = ("resistance", "energy", "energy_true", "chain", "run", "n_events",
+             "sigma_pct", "err_sigma", "sigma_fixed_tails", "d_tails",
+             "peak_ADC", "err_peak_ADC", "peak_dev_pct", "peak_pull",
+             "sigma_dev_pct", "sigma_pull",
+             "E_sigma_mean", "E_peak_mean_ADC", "E_drift_pct", "E_chi2_peak",
+             "E_n_run", "E_bes", "E_sync", "E_pos_eff", "E_stat", "E_syst_tails")
+    p = os.path.join(a.outdir, "per_run.csv")
+    with open(p, "w") as fh:
+        fh.write(",".join(rcols) + "\n")
+        for r in rows:
+            for tag in ("cen", "hodo"):
+                pr = r.get(tag + "_runs", [])
+                if not pr:
+                    continue
+                pk = np.array([u["peak"] for u in pr])
+                ep = np.array([u["err_peak"] for u in pr])
+                w = 1. / np.maximum(ep, 1e-12) ** 2
+                pm = float((pk * w).sum() / w.sum())
+                sm = r.get(tag, np.nan)
+                for u in pr:
+                    d = dict(resistance=r["resistance"], energy=r["energy"],
+                             energy_true=r["energy_true"], chain=tag, run=u["run"],
+                             n_events=u["nev"], sigma_pct=u["sigma"],
+                             err_sigma=u["err"], sigma_fixed_tails=u["sigma_fixed"],
+                             d_tails=abs(u["sigma"] - u["sigma_fixed"]),
+                             peak_ADC=u["peak"], err_peak_ADC=u["err_peak"],
+                             peak_dev_pct=100. * (u["peak"] / pm - 1.),
+                             peak_pull=(u["peak"] - pm) / u["err_peak"]
+                                       if u["err_peak"] > 0 else np.nan,
+                             sigma_dev_pct=100. * (u["sigma"] / sm - 1.)
+                                           if sm > 0 else np.nan,
+                             sigma_pull=(u["sigma"] - sm) / u["err"]
+                                        if u["err"] > 0 else np.nan,
+                             E_sigma_mean=sm, E_peak_mean_ADC=pm,
+                             E_drift_pct=r.get(tag + "_drift", 0.),
+                             E_chi2_peak=r.get(tag + "_chi2", np.nan),
+                             E_n_run=r.get("nrun_" + tag, 0),
+                             E_bes=r["bes"], E_sync=r["sync"],
+                             E_pos_eff=r.get(tag + "_pos", 0.),
+                             E_stat=r.get(tag + "_stat", np.nan),
+                             E_syst_tails=r.get(tag + "_tails", 0.))
+                    fh.write(",".join(f"{d[c]:.6g}" if isinstance(d[c], float)
+                                      else str(d[c]) for c in rcols) + "\n")
     print("->", p)
 
     Rs = [R for R in (340, 400, 500) if any(r["resistance"] == R for r in rows)]
@@ -463,8 +554,8 @@ def main():
                 ax = axs[k // nc][k % nc]
                 pr = r[tag + "_runs"]
                 xs = np.arange(len(pr))
-                pk = np.array([p for _, _, _, p, _ in pr])
-                ep = np.array([e for _, _, _, _, e in pr])
+                pk = np.array([u["peak"] for u in pr])
+                ep = np.array([u["err_peak"] for u in pr])
                 w = 1. / ep ** 2
                 m0 = float((pk * w).sum() / w.sum())
                 ys = 100 * (pk / m0 - 1.); es = 100 * ep / m0
@@ -477,7 +568,7 @@ def main():
                     ax.axhspan(-dr, dr, color="C3", alpha=.15,
                                label=f"$\\pm$ drift {dr:.4f} %")
                 ax.set_xticks(xs)
-                ax.set_xticklabels([str(rn) for rn, *_ in pr], rotation=90, fontsize=6)
+                ax.set_xticklabels([str(u["run"]) for u in pr], rotation=90, fontsize=6)
                 ndf = len(pr) - 1
                 if dr > 0:
                     txt = (f"$\\chi^2$/ndf {c0:.2f} ({ndf} ndf) $>$ 1  "

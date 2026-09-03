@@ -9,10 +9,12 @@ hodoscope reads millimetres with an arbitrary origin, so it needs an offset and 
 scale first.
 
 Which planes. There are two planes per view. In x both are healthy and their average
-is taken, which is also the better position estimate. In y the second plane fires a
-single cluster more often (65 % of events against 42 %), but that is efficiency, not
-quality: profiled against A_tot, y1 gives a clean parabola over its whole range while
-y2 is jagged below zero. The plane to cut on is y1; y2 stays selectable for comparison.
+is taken, which is also the better position estimate. In y the two planes are equally
+efficient -- both fire exactly one cluster on about 43 to 46 % of the events, y2 being
+less often empty (2.4 % against 6.0 %) but correspondingly more often multi-cluster --
+so efficiency does not choose between them. What chooses is the shape: profiled
+against A_tot, y1 gives a clean parabola over its whole range while y2 is jagged below
+zero. The plane to cut on is y1; y2 stays selectable for comparison.
 
 How the two constants are obtained, without ever regressing against the centroid:
 

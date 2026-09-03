@@ -337,13 +337,28 @@ with the position cut taken from the hodoscope, which is independent of the
 calorimeter.
 
 **Which planes.** x is the average of the two x planes. y is taken from **y1**
-(`--yplane`, default y1). y2 fires a single cluster more often, 65 % of events against
-42 %, but that is efficiency and not quality: profiled against A_tot, y1 gives a clean
-parabola over its whole range while y2 is jagged below zero and usable only above it.
-Cutting on y1 needs no range restriction, keeps the window centred on the crystal
-instead of one-sided, and raises the fraction of events kept from about 35 % to about
-60 %. Only events with exactly one cluster in the planes used are kept; the surviving
-fraction is written to the output CSV point by point.
+(`--yplane`, default y1). The two y planes are equally efficient — each fires exactly
+one cluster on 43 to 46 % of the events; y2 is less often empty (2.4 % against 6.0 %)
+and correspondingly more often multi-cluster — so efficiency does not choose between
+them. What chooses is the shape: profiled against A_tot, y1 gives a clean parabola
+over its whole range while y2 is jagged below zero and usable only above it. Cutting
+on y1 needs no range restriction and keeps the window centred on the crystal instead
+of one-sided.
+
+**The one-cluster requirement** applies to each plane used — x1, x2 and y1, all three
+with exactly one cluster — and it is what costs the statistics: about 35 % of the
+events survive it (86 % on x1, 81 % on x2, 46 % on y1). The surviving fraction is
+written to the output CSV point by point.
+
+**Orientation.** hodo x maps to eta and hodo y to phi, with the y axis inverted: phi
+*decreases* as hodo y increases. Regressing the centroid on the hodoscope over the
+core of the beam gives `d(eta)/dx ~ +0.037` and `d(phi)/dy ~ -0.039` crystals per mm,
+with off-diagonal terms of 1 to 2 % of those, i.e. a residual rotation between the
+hodoscope axes and the crystal axes of about **1 degree**. Over a window of
++- 0.2 crystals (~ +- 5 mm) that displaces a corner by 0.08 mm, so it is ignored. The
+1/0.037 = 27 mm per crystal that the regression implies is an overestimate of the
+24.2 mm pitch, attenuated by regression dilution — which is why the scale is taken
+from the ratio of the curvatures instead.
 
 **No range is imposed a priori** on either coordinate: the profile covers the whole
 range the data span, from the 0.5th to the 99.5th percentile.
@@ -444,30 +459,74 @@ Because of this the constant term of the two chains is not the same quantity: th
 centroid one has POS_eff removed, the hodoscope one still contains it. They must not
 be compared directly.
 
+### How to run it
+
+The hodoscope chain is independent of the main chain except for two inputs, which must
+exist first:
+
+| input | produced by | used for |
+|---|---|---|
+| `plot/profili/profili_pernorm.csv` | `profili_pernorm.py` | the response curvature in crystal units, `c_crystal`, from which `W = sqrt(c_crystal / c_mm)`. Needed only by `--window parabola` |
+| `plot/bes/rereco_<R>_withBES.csv` | the beam-energy-spread study | the BES term subtracted from every point |
+
+`drift_dcb_all.py` is **not** needed: `resolution_hodo.py` fits the runs itself and
+computes its own drift on the selection in use.
+
 ```bash
-# the two window definitions, into two directories
-python3 resolution_hodo.py --base <data> --outdir plot/hodo_parab --besdir plot/bes \
+cd <working directory>          # the one containing reco_340ohm/ etc.
+
+# 0  prerequisite: the crystal-unit curvature (skip if plot/profili is up to date)
+python3 plot/profili_pernorm.py --base . --outdir plot/profili \
+    --resistances 340 400 500
+
+# 1  calibration on its own: offsets, W per energy, and the list of points
+#    where the parabola scan finds nothing. Useful as a check before the rest
+python3 plot/hodoscope_calib.py --base . --outdir plot/hodo_scan --plotdir plot \
+    --resistances 340 400 500
+
+# 2  the resolution, once per window definition, into two directories
+python3 plot/resolution_hodo.py --base . --outdir plot/hodo_parab --besdir plot/bes \
     --plotdir plot --resistances 340 400 500 --window parabola
-python3 resolution_hodo.py --base <data> --outdir plot/hodo_plateau --besdir plot/bes \
+python3 plot/resolution_hodo.py --base . --outdir plot/hodo_plateau --besdir plot/bes \
     --plotdir plot --resistances 340 400 500 --window plateau
 
-# the picture behind each cut
-python3 hodo_windows.py --base <data> --outdir plot/hodo_parab --plotdir plot \
+# 3  the picture behind each cut (slow, about two minutes per resistance)
+python3 plot/hodo_windows.py --base . --outdir plot/hodo_parab --plotdir plot \
     --resistances 340 400 500 --window parabola
-python3 hodo_windows.py --base <data> --outdir plot/hodo_plateau --plotdir plot \
+python3 plot/hodo_windows.py --base . --outdir plot/hodo_plateau --plotdir plot \
     --resistances 340 400 500 --window plateau
-
-# the calibration on its own, with the list of points that have no parabola
-python3 hodoscope_calib.py --base <data> --outdir plot/hodo_scan --plotdir plot \
-    --resistances 340 400 500
 ```
 
+Each call writes both chains, centroid and hodoscope, into the same CSV: step 2 is run
+once per **window definition**, not once per chain.
+
+Options worth knowing:
+
+| option | default | what it does |
+|---|---|---|
+| `--window` | `plateau` | `parabola` or `plateau`, see above. Pass it explicitly: the default is the plateau |
+| `--yplane` | `y1` | which y plane to cut on. `y2` is kept only for comparison |
+| `--half` | `0.2` | half-window in crystal units, the same as the centroid cut |
+| `--tol` | `0.005` | how far the response may fall inside the plateau window |
+| `--tails` | `both` | `free`, `fixed`, or `both` (nominal free, `|free - fixed|` carried as a systematic) |
+| `--nofit-energies` | `250 275` | drawn but left out of the N/S/C fit |
+| `--runset` | `standard` | `standard`, `filter50` or `all`, from `runsets.py` |
+| `--exclude-runs` | — | extra run numbers to drop |
+| `--exclude` | — | whole points, as `R:E`, e.g. `340:275` |
+
+To check one point by hand, for instance why an error bar looks large:
+
+```bash
+python3 plot/dcb_error_check.py --base . --plotdir plot \
+    --resistance 500 --energy 60 --nboot 40
+```
 Outputs of `resolution_hodo.py`:
 
 | file | what |
 |---|---|
 | `resolution_hodo.csv` | both selections point by point: which window was used, its limits, the response drop inside it, events kept, and for each chain sigma, statistical error, drift, the observed chi2/ndf of the per-run sigmas, and the corrected value |
-| `sigma_per_run.csv` | the individual per-run sigma/mu with its error, for both chains — the input of the drift |
+| `systematics.csv` | one row per (resistance, energy, chain): every contribution side by side — sigma measured, statistical error, fit-model systematic, total bar, BES, synchrotron, POS_eff, drift, chi2 of the peaks, corrected sigma — plus each term as a percentage of the measured sigma, so the dominant one is visible at a glance |
+| `per_run.csv` | the same broken down **run by run**: events, sigma with free and with fixed tails and their difference, peak and its error, the deviation of that run's peak from the weighted mean in percent and its pull, the same for sigma, and alongside them the energy-level terms the run contributes to. The drift is an energy-level quantity by construction, but what generates it is here: `peak_pull` says which run is pulling it |
 | `resolution_terms_<chain>.png` | the three resistances, with `--nofit-energies` drawn but left out of the fit, and the size of every subtracted term in the panel below |
 | `resolution_terms_<chain>_allpoints.png` | the same with **every** point inside the fit, so the weight of those energies on N, S and C is visible. Both variants are produced for **both** chains, centroid and hodoscope |
 | `drift_check_<chain>_<R>ohm.png` | one panel per energy: the per-run sigma/mu with their errors, the weighted mean, the drift band, and the observed chi2/ndf written in the title — green where it is already <= 1 and the drift is therefore zero, red where an extra error is needed, grey where there is a single run |
