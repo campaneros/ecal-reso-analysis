@@ -14,15 +14,16 @@
 # scripts (plot/root/fit_summary.csv and plot/root/fit_fixedSC_summary.csv). If they
 # do not, the culprit is almost always the minimiser seed: compare N, S and C before
 # blaming the data.
-set -e
-cd "$(dirname "$0")/../.."
+
+
 if ! command -v root >/dev/null 2>&1; then
   echo "ROOT is not in PATH. With a standard installation:  source /path/to/thisroot.sh"
   exit 1
 fi
-python3 plot/fit_root_all.py --plotdir plot --outdir plot/root
-python3 plot/fit_fixedSC.py  --plotdir plot --outdir plot/root
-root -l -b -q plot/root/fit_resolution.C
-root -l -b -q plot/root/fit_fixedSC.C
+
+python3 fit_root_all.py --plotdir plot --outdir plot/root
+python3 fit_fixedSC.py  --plotdir plot --outdir plot/root
+root -l -b -q root/fit_resolution.C
+root -l -b -q root/fit_fixedSC.C
 echo
 echo "done: plot/root/resolution_fits.root, plot/root/resolution_fixedSC.root"
