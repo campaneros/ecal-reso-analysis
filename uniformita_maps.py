@@ -91,9 +91,11 @@ def stage_moments(path, E, R, drop, outdir, only=()):
         m = run == r
         f = fit_dcb(at[m], E, R)
         if f is None:
+            print("f is None")
             continue
         w = (at[m] >= f["lo"]) & (at[m] <= f["hi"])
         if w.sum() < 100:
+            print("problems with limits")
             continue
         M, b, n = moments(u[m][w], v[m][w], at[m][w] / f["peak"])
         sm, se = rel(f)
@@ -205,8 +207,12 @@ COLS = ("resistance,energy,energy_true,nrun,nev,n_fallback,raw,err_raw,scat_run,
 
 def stage_collect(outdir, resistances):
     rows = []
+    print("1")
     for f in sorted(glob.glob(os.path.join(outdir, "_apply", "*.json"))):
+        print("2")
+
         c = json.load(open(f))
+
         R, E = int(c["resistance"]), int(c["energy"])
         if R not in resistances:
             continue
@@ -216,8 +222,8 @@ def stage_collect(outdir, resistances):
         # the two coincide by construction and the systematic is zero: there is no
         # ambiguity to measure there. The per-resistance 'mean' variant stays in the
         # CSV as a diagnostic and does not enter the number.
-        sr, se = c["s_run"][0], c["s_energy"][0]
-        syst = abs(sr - se) if (np.isfinite(sr) and np.isfinite(se)) else np.nan
+        sr, se, sm = c["s_run"][0], c["s_energy"][0], c["s_mean"][0]
+        syst = abs(se - sm) if (np.isfinite(sm) and np.isfinite(se)) else np.nan # passing to the diff w.r.t. mean (Ruben)
         ce, cm = np.array(c["coef_energy"]), np.array(c["coef_mean"])
         r = dict(resistance=R, energy=E, energy_true=VERA.get(E, float(E)),
                  nrun=c["nrun"], nev=c["nev"], n_fallback=c["n_fallback"],
@@ -300,8 +306,11 @@ def main():
 
     for R in a.resistances:
         d, pat = FILES[R]
+        print(FILES)
+        print("searching in: ", os.path.join(a.base, d, pat) )
         files = sorted(glob.glob(os.path.join(a.base, d, pat)),
                        key=lambda p: int(re.match(r"(\d+)", os.path.basename(p)).group(1)))
+        print("files: ", files)
         for f in files:
             E = int(re.match(r"(\d+)", os.path.basename(f)).group(1))
             if a.energies is not None and E not in a.energies:

@@ -28,7 +28,7 @@ Usage in a script:
     if only: keep &= np.isin(run, only)
 """
 
-FILTER_50MHZ = tuple(range(20587, 20605))
+FILTER_50MHZ = tuple(range(20552, 20600)) + tuple(range(20486,20501))
 HIGH_275 = tuple(range(20652, 20660))
 OUTLIERS = (20491,)
 
