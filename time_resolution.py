@@ -24,7 +24,8 @@ Chain, for every mode
   1. per point: the selection of the energy resolution (selection.py): A_tot cut,
      run selection, hodoscope window from the parabola study; a point without a
      window is skipped, as in fit_dcb_per_run.py;
-  2. per run: the median (circular mean for ecal-mcp) of Delta T is subtracted;
+  2. per run and per gain state (gs of the crystals: the low gain moves the time by
+     ~1.5 ns): the median (circular mean for ecal-mcp) of Delta T is subtracted;
   3. all runs and energies of the same crystal(s) together: TH2 of Delta T against x with variable x bins of
      --per-bin events each (as var_bins.C)                       -> <mode>_<crystals>_<x>_th2.root
   4. Y projection of every x bin, gaussian fit in +- 2 sigma     -> ..._projections.root
@@ -55,6 +56,7 @@ NS_PER_DIGITIZER_UNIT = 0.2       # mcp_t, clk_phase, clk_period are in units of
 # a run enters the MCP modes when at least this fraction of its events has both MCPs
 # above --mcp-min (runs without MCP, or with the MCPs off, have ~0-30 %)
 MCP_MIN_FRACTION = 0.5
+MIN_EVENTS_PER_GROUP = 50         # events of a (run, gain state) needed to measure its offset
 Y_RANGE_NS, Y_BIN_NS = 3.0, 0.005
 SLICE_FIT_SIGMAS, SLICE_FIT_ROUNDS, SLICE_MIN_ENTRIES = 2.0, 3, 50
 
@@ -79,6 +81,16 @@ def run_files(base):
         if match:
             files[int(match.group(1))] = (int(match.group(2)), path)
     return files
+
+
+def has_events(path):
+    """False for the reco files with no event (runs stopped at the start, e.g. 19702)."""
+    handle = ROOT.TFile.Open(path)
+    tree = handle.Get("h4_reco") if handle and not handle.IsZombie() else None
+    entries = tree.GetEntries() if tree else 0
+    if handle:
+        handle.Close()
+    return entries > 0
 
 
 def good_runs(good_runs_csv):
@@ -172,7 +184,9 @@ def time_columns(mode, crystals):
             "amp_1": f"pipeline_crystal_value(A, sel_ieta, sel_iphi, {eta_1}, {phi_1})",
             "amp_2": f"pipeline_crystal_value(A, sel_ieta, sel_iphi, {eta_2}, {phi_2})",
             "time_1": f"pipeline_crystal_value(t, sel_ieta, sel_iphi, {eta_1}, {phi_1})",
-            "time_2": f"pipeline_crystal_value(t, sel_ieta, sel_iphi, {eta_2}, {phi_2})"})
+            "time_2": f"pipeline_crystal_value(t, sel_ieta, sel_iphi, {eta_2}, {phi_2})",
+            "gain_1": f"pipeline_crystal_value(gs, sel_ieta, sel_iphi, {eta_1}, {phi_1})",
+            "gain_2": f"pipeline_crystal_value(gs, sel_ieta, sel_iphi, {eta_2}, {phi_2})"})
         return columns
     columns.update({"mcp_amp_0": "(double)mcp_A[0]", "mcp_amp_1": "(double)mcp_A[1]",
                     "mcp_time_0": "(double)mcp_t[0]", "mcp_time_1": "(double)mcp_t[1]"})
@@ -180,7 +194,8 @@ def time_columns(mode, crystals):
         columns.update({
             "phase": "(double)clk_phase",
             "amp_1": f"pipeline_crystal_value(A, sel_ieta, sel_iphi, {eta_1}, {phi_1})",
-            "time_1": f"pipeline_crystal_value(t, sel_ieta, sel_iphi, {eta_1}, {phi_1})"})
+            "time_1": f"pipeline_crystal_value(t, sel_ieta, sel_iphi, {eta_1}, {phi_1})",
+            "gain_1": f"pipeline_crystal_value(gs, sel_ieta, sel_iphi, {eta_1}, {phi_1})"})
     return columns
 
 
@@ -211,12 +226,29 @@ def delta_and_x(mode, events, args):
     return raw, {"aecal_over_sigman": x_ecal, "mcp_aeff": mcp_aeff}, valid
 
 
-def correct_per_run(mode, delta, run, clk, selected):
-    """Subtract the per-run centre of Delta T. Returns (corrected in ns, rows)."""
+def gain_state(mode, events):
+    """0 = every crystal used in high gain; the gain switch (gs = 1) moves the time of
+    a crystal by ~1.5 ns, so every combination gets its own offset.
+    crystals: 2*gs_1 + gs_2; ecal-mcp: gs of the crystal; mcp-mcp: 0."""
+    if mode == "crystals":
+        return (2 * np.nan_to_num(events["gain_1"]) + np.nan_to_num(events["gain_2"])).astype(int)
+    if mode == "ecal-mcp":
+        return np.nan_to_num(events["gain_1"]).astype(int)
+    return np.zeros(len(events["run"]), int)
+
+
+def correct_per_run(mode, delta, run, clk, selected, state=None):
+    """Subtract the centre of Delta T of every (run, gain state). Groups with fewer
+    than MIN_EVENTS_PER_GROUP events are left out (NaN). Returns (corrected in ns, rows)."""
     corrected = np.full(len(delta), np.nan)
+    state = np.zeros(len(delta), int) if state is None else state
     rows = []
-    for this_run in np.unique(run[selected]):
-        in_run = selected & (run == this_run)
+    for this_run, this_state in sorted(set(zip(run[selected].tolist(), state[selected].tolist()))):
+        in_run = selected & (run == this_run) & (state == this_state)
+        if in_run.sum() < MIN_EVENTS_PER_GROUP:
+            rows.append(dict(run=int(this_run), gain_state=int(this_state),
+                             n_events=int(in_run.sum()), offset_ns=np.nan, rms_ns=np.nan))
+            continue
         if mode == "ecal-mcp":
             period = clk[in_run]
             angle = 2 * np.pi * delta[in_run] / period
@@ -228,7 +260,8 @@ def correct_per_run(mode, delta, run, clk, selected):
         else:
             offset = float(np.median(delta[in_run]))
             corrected[in_run] = delta[in_run] - offset
-        rows.append(dict(run=int(this_run), n_events=int(in_run.sum()), offset_ns=float(offset),
+        rows.append(dict(run=int(this_run), gain_state=int(this_state),
+                         n_events=int(in_run.sum()), offset_ns=float(offset),
                          rms_ns=float(np.std(corrected[in_run]))))
     return corrected, rows
 
@@ -303,7 +336,14 @@ def analyse_point(mode, point, args, outdir, dropped, kept_only):
     the point is skipped."""
     energy, crystals, label = point["energy"], point["crystals"], point["label"]
     matrix_eta, matrix_phi = crystals[1]
-    events = common.read_events(point["paths"], matrix_eta, matrix_phi, "a3x3",
+    paths = [path for path in point["paths"] if has_events(path)]
+    empty = sorted(set(point["paths"]) - set(paths))
+    if empty:
+        print(f"    empty files left out: {[os.path.basename(path) for path in empty]}")
+    if not paths:
+        return dict(label=label, energy=energy, runs=" ".join(map(str, point["runs"])),
+                    reason="no event in any file"), None, [], {}
+    events = common.read_events(paths, matrix_eta, matrix_phi, "a3x3",
                                 extra=time_columns(mode, crystals))
     base = ((events["A_tot"] > common.A_TOT_MIN)
             & common.runset_mask(events["run"], dropped, kept_only))
@@ -337,7 +377,8 @@ def analyse_point(mode, point, args, outdir, dropped, kept_only):
     position = cuts["nominal"] & usable
     delta, x_values, valid = delta_and_x(mode, events, args)
     selected = position & valid
-    corrected, run_rows = correct_per_run(mode, delta, events["run"], events["clk"], selected)
+    corrected, run_rows = correct_per_run(mode, delta, events["run"], events["clk"], selected,
+                                          gain_state(mode, events))
     for run_row in run_rows:
         run_row.update(energy=energy, label=label)
     row.update(n_hodoscope=int(position.sum()), n_selected=int(selected.sum()))
@@ -383,7 +424,7 @@ def analyse_mode(mode, files, args):
                       "skipped", "reason", "x_lo", "x_hi", "y_lo", "y_hi", "x_vertex", "y_vertex",
                       "x_ok", "y_ok", "x_why", "y_why", "fallback"))
     common.write_csv(os.path.join(outdir, f"{mode}_per_run.csv"), run_rows,
-                     ("label", "run", "energy", "n_events", "offset_ns", "rms_ns"))
+                     ("label", "run", "energy", "gain_state", "n_events", "offset_ns", "rms_ns"))
     for (label, x_name), (x_parts, y_parts) in sorted(pooled.items()):
         resolution_vs_x(mode, label, x_name, np.concatenate(x_parts), np.concatenate(y_parts),
                         outdir, args)

@@ -22,7 +22,7 @@ TREE = "h4_reco"
 BRANCHES = ["run", "spill", "evt", "energy", "A_tot", "A", "A_err", "t", "t_err",
             "sel_ieta", "sel_iphi", "pos_eta", "pos_phi", "bsl_rms",
             "mcp_A", "mcp_A_err", "mcp_t", "mcp_t_err", "mcp_fit_status",
-            "fit_status", "clk_period", "clk_phase",
+            "fit_status", "gs", "clk_period", "clk_phase",
             "hodo_x1_nclusters", "hodo_y1_nclusters", "hodo_x1_pos", "hodo_y1_pos",
             "hodo_x2_nclusters", "hodo_y2_nclusters", "hodo_x2_pos", "hodo_y2_pos"]
 
