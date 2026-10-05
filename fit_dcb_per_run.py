@@ -32,7 +32,7 @@ import numpy as np
 import ROOT
 
 import common
-import hodoscope_window
+import selection
 from common import runsets
 
 FIT_COLUMNS = ("resistance", "energy", "energy_true", "amplitude",
@@ -133,7 +133,6 @@ def main():
     runsets.add_argument(parser)
     args = parser.parse_args()
 
-    half = args.half
     dropped, kept_only = runsets.resolve(args.runset, args.exclude_runs)
     print(dropped, kept_only)
     excluded_points = common.parse_excluded_points(args.exclude)
@@ -147,50 +146,11 @@ def main():
 
         print(f"[{resistance} ohm {energy:>4} GeV] {os.path.basename(path)}", flush=True)
         events = common.read_events(path, args.eta_center, args.phi_center, args.amplitude)
-        base = (events["A_tot"] > common.A_TOT_MIN) & common.runset_mask(events["run"], dropped,
-                                                                          kept_only)
-
-        window_row = dict(resistance=resistance, energy=energy,
-                          energy_true=common.true_energy(energy),
-                          n_base=int(base.sum()), skipped=0, reason="",
-                          fallback="")
-
-        hodo_x, hodo_y = common.hodoscope_xy(events, args.yplane)
-
-        info = hodoscope_window.hodoscope_windows(hodo_x, hodo_y, events["A_tot"], base, resistance, energy, half, args.outdir, args.fallback_file)
-
-        for coordinate in ("x", "y"):
-            scan = info["scan"][coordinate]
-            window_row.update({f"{coordinate}_vertex": scan["vertex"],
-                               f"{coordinate}_width": scan["width"],
-                               f"{coordinate}_ok": int(scan["ok"]),
-                               f"{coordinate}_why": info["why"][coordinate]})
-        window_row["fallback"] = "+".join(info["fallback"])
-        window_row["window"] = hodoscope_window.window_label(info["fallback"])
-        for coordinate in info["fallback"]:
-            reason = info["why"][coordinate]
-            print(f"    {coordinate}: hand-set vertex of resolution_hodo.py"
-                  + (f" (scan failed: {reason})" if reason else " (overrides a successful scan)"))
-        missing = [c for c in ("x", "y") if info["windows"][c] is None]
-        if missing:
-            reason = "; ".join(f"{c}: {info['why'][c]}" for c in missing)
-            print(f"    SKIPPED, no window in {'+'.join(missing)} ({reason})")
-            window_row.update(skipped=1, reason=reason, n_selected=0)
-            window_rows.append(window_row)
-            continue
-        window_x, window_y = info["windows"]["x"], info["windows"]["y"]
-        window_row.update(x_lo=window_x[0], x_hi=window_x[1], y_lo=window_y[0],
-                          y_hi=window_y[1])
-        cuts = hodoscope_window.window_masks(hodo_x, hodo_y, base, window_x, window_y)
-        if cuts["nominal"].sum() < common.MIN_EVENTS_POOLED:
-            print(f"    SKIPPED, only {cuts['nominal'].sum()} events after the hodoscope cut")
-            window_row.update(skipped=1, n_selected=int(cuts["nominal"].sum()),
-                              reason="fewer than 500 events in the window")
-            window_rows.append(window_row)
-            continue
-
-        window_row["n_selected"] = int(cuts["nominal"].sum())
+        window_row, cuts = selection.select_point(events, resistance, energy, dropped, kept_only,
+                                                  args)
         window_rows.append(window_row)
+        if cuts is None:
+            continue
 
         amplitude, run = events["amplitude"], events["run"]
         nominal_fits, pooled_nominal = {}, None

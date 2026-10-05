@@ -110,16 +110,28 @@ double pipeline_first_or_nan(const ROOT::RVecF &positions) {{
 ''')
 
 
-def read_events(path, ETA_CENTRE, PHI_CENTRE, amplitude="a3x3"):
+def read_events(path, ETA_CENTRE, PHI_CENTRE, amplitude="a3x3", extra=None):
     """All the per-event quantities the pipeline uses, as numpy arrays.
 
+    path       one file or a list of files (chained)
     amplitude  a3x3  the 3x3 sum around (18, 6), rebuilt from the A branch, as in
                      resolution_hodo.py and drift_dcb_all.py
                atot  the A_tot branch, as in uniformita_pos.py and profili_pernorm.py
+    extra      {name: expression} defined on the frame and returned as well (the time
+               branches of time_resolution.py)
     The threshold A_tot > A_TOT_MIN is ALWAYS applied to the A_tot branch, whatever
     the amplitude fitted: that is what every flat script does.
     """
-    frame = ROOT.RDataFrame("h4_reco", path)
+    if isinstance(path, (list, tuple)):
+        files = ROOT.std.vector("string")()
+        for name in path:
+            files.push_back(name)
+        frame = ROOT.RDataFrame("h4_reco", files)
+    else:
+        frame = ROOT.RDataFrame("h4_reco", path)
+    extra = extra or {}
+    for name, expression in extra.items():
+        frame = frame.Define(name, expression)
     if amplitude == "a3x3":
         frame = frame.Define("amplitude",
                              f"pipeline_sum_matrix(A, sel_ieta, sel_iphi, {ETA_CENTRE}, {PHI_CENTRE}, 2)")
@@ -133,7 +145,7 @@ def read_events(path, ETA_CENTRE, PHI_CENTRE, amplitude="a3x3"):
                              f"pipeline_sum_matrix(A, sel_ieta, sel_iphi, {ETA_CENTRE}, {PHI_CENTRE}, 3)")
     else:
         raise ValueError(f"unknown amplitude {amplitude}")
-    columns = ["run", "spill", "evt", "A_tot", "amplitude", "pos_eta", "pos_phi"]
+    columns = ["run", "spill", "evt", "A_tot", "amplitude", "pos_eta", "pos_phi"] + list(extra)
 
     for plane in ("x1", "x2", "y1", "y2"):
         frame = frame.Define(f"hodo_{plane}", f"pipeline_first_or_nan(hodo_{plane}_pos)")
