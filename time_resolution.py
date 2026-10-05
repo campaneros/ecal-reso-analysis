@@ -59,6 +59,9 @@ MCP_MIN_FRACTION = 0.5
 MIN_EVENTS_PER_GROUP = 50         # events of a (run, gain state) needed to measure its offset
 Y_RANGE_NS, Y_BIN_NS = 3.0, 0.005
 SLICE_FIT_SIGMAS, SLICE_FIT_ROUNDS, SLICE_MIN_ENTRIES = 2.0, 3, 50
+SEED_MIN_PEAK_COUNTS = 30
+SLICE_MIN_PEAK_FRACTION = 0.2     # events under the gaussian, below it the slice has no peak
+SLICE_MAX_SIGMA_NS = 1.0          # wider than this the slice is flat over the +-3 ns window
 
 ROOT.gInterpreter.Declare(r'''
 // value of the crystal (eta, phi) in a per-crystal vector of the reco, NaN if absent
@@ -292,11 +295,31 @@ def fill_th2(name, title, x_values, y_values, edges):
     return histogram
 
 
+def peak_seed(projection):
+    """(position of the maximum, FWHM / 2.355): the RMS of a slice is inflated by the
+    flat tails and would drag the gaussian far wider than the peak. The bins are
+    merged until the highest holds SEED_MIN_PEAK_COUNTS, so that a wide peak with few
+    counts per bin is not read from a single fluctuation."""
+    projection = projection.Clone(common.unique_name("seed"))
+    while projection.GetMaximum() < SEED_MIN_PEAK_COUNTS and projection.GetNbinsX() % 2 == 0:
+        projection.Rebin(2)
+    contents = np.array([projection.GetBinContent(index) for index in range(1, projection.GetNbinsX() + 1)])
+    top = int(contents.argmax())
+    half = 0.5 * contents[top]
+    low, high = top, top
+    while low > 0 and contents[low - 1] > half:
+        low -= 1
+    while high < len(contents) - 1 and contents[high + 1] > half:
+        high += 1
+    width = (high - low + 1) * projection.GetBinWidth(1)
+    return projection.GetBinCenter(top + 1), max(width / 2.355, projection.GetBinWidth(1))
+
+
 def fit_slice(projection):
     """Gaussian in +- SLICE_FIT_SIGMAS sigma, re-centred SLICE_FIT_ROUNDS times."""
     if projection.GetEntries() < SLICE_MIN_ENTRIES:
         return None
-    mean, sigma = projection.GetMean(), projection.GetStdDev()
+    mean, sigma = peak_seed(projection)
     function = ROOT.TF1(common.unique_name("slice_gaus"), "gaus", -Y_RANGE_NS, Y_RANGE_NS)
     result = None
     for _ in range(SLICE_FIT_ROUNDS):
@@ -307,6 +330,9 @@ def fit_slice(projection):
         if not result.Get() or result.Status() != 0 or function.GetParameter(2) <= 0:
             return None
         mean, sigma = function.GetParameter(1), abs(function.GetParameter(2))
+    peak_events = function.GetParameter(0) * sigma * math.sqrt(2 * math.pi) / projection.GetBinWidth(1)
+    if peak_events < SLICE_MIN_PEAK_FRACTION * projection.GetEntries() or sigma > SLICE_MAX_SIGMA_NS:
+        return None                               # no peak: a noise-only slice
     projection.GetListOfFunctions().Add(function)
     return dict(mean=mean, sigma=sigma, err_sigma=function.GetParError(2),
                 chi2=function.GetChisquare(), ndf=function.GetNDF())
