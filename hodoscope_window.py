@@ -139,7 +139,8 @@ def parabola_scan(profile, resistance, energy, outdir, coordinate_name):
     return out
 
 
-def hodoscope_windows(hodo_x, hodo_y, a_tot, base_mask, resistance, energy, half, outdir, fallback_file):
+def hodoscope_windows(hodo_x, hodo_y, a_tot, base_mask, resistance, energy, half, outdir, fallback_file,
+                      vertex_when_flat=None):
 
     fallback_module = importlib.import_module(fallback_file.replace(".py", ""))
 
@@ -150,6 +151,10 @@ def hodoscope_windows(hodo_x, hodo_y, a_tot, base_mask, resistance, energy, half
     )
 
     """The (low, high) window in x and in y, with the scan diagnostics.
+
+    vertex_when_flat: {coord: vertex} used where the scan finds no maximum (a flat
+    response, e.g. the 3x3 sum with the beam between two crystals); recorded in
+    fallback as "<coord>flat".
 
     Returns dict(windows={'x': (lo, hi) | None, 'y': ...}, fallback=[coords],
                  why={coord: reason}, scan={coord: scan dict}).
@@ -170,6 +175,10 @@ def hodoscope_windows(hodo_x, hodo_y, a_tot, base_mask, resistance, energy, half
         if scan["ok"]:
             windows[coordinate_name] = (scan["vertex"] - half,
                                         scan["vertex"] + half)
+        elif vertex_when_flat and coordinate_name in vertex_when_flat:
+            vertex = vertex_when_flat[coordinate_name]
+            windows[coordinate_name] = (vertex - half, vertex + half)
+            fallback.append(coordinate_name + "flat")
         # the hand-set vertex overrides the scan for the points listed
         if (resistance, energy) in BAD_PARABOLA_VERTEX[coordinate_name]:
             vertex = BAD_PARABOLA_VERTEX[coordinate_name][(resistance, energy)]

@@ -4,8 +4,11 @@ Time resolution, after the selection shared with the energy resolution (selectio
 
 Modes
   crystals  Delta T between the two crystals the beam was aimed between (runs with
-            "5/6" in the eta or phi column of the good-run list): the beam centre X, Y
-            has a .5, the two crystals are its two neighbours. x = A_eff / sigma_n =
+            "5/6" in the eta or phi column of the good-run list). The hodoscope
+            parabola profiles the 3x3 sum rebuilt from A, not the seed-based A_tot,
+            so that the response is flat across the boundary; in the coordinate where
+            it is flat (no maximum) the window is centred on the boundary, the zero of
+            (A_1 - A_2)/(A_1 + A_2) (pol1 fit). x = A_eff / sigma_n =
             sqrt(2 / ((sigma_n/A_1)^2 + (sigma_n/A_2)^2)), y = sigma(Delta T)/sqrt(2).
   mcp-mcp   Delta T between the two MCPs, both with mcp_A > --mcp-min;
             x = 2 / (1/mcp_A[0] + 1/mcp_A[1]), y = sigma(Delta T)/sqrt(2).
@@ -15,13 +18,17 @@ Modes
             Two sets of outputs: x = A_ecal / sigma_n and x = MCP A_eff. y = sigma.
 
 Chain, for every mode
-  1. per energy: A_tot cut, run selection, hodoscope window (parabola study) when it
-     can be built, and the centroid cut |pos_eta - X| < 0.2 && |pos_phi - Y| < 0.2;
+  0. runs: every run of the good-run list with a reco file; "a/b" rows go to the
+     crystals mode, single-crystal rows to the MCP modes, keeping only the runs with
+     both MCPs alive (MCP_MIN_FRACTION); points = (crystals, table position, energy);
+  1. per point: the selection of the energy resolution (selection.py): A_tot cut,
+     run selection, hodoscope window from the parabola study; a point without a
+     window is skipped, as in fit_dcb_per_run.py;
   2. per run: the median (circular mean for ecal-mcp) of Delta T is subtracted;
-  3. all runs and energies together: TH2 of Delta T against x with variable x bins of
-     --per-bin events each (as var_bins.C)                       -> <mode>_th2.root
-  4. Y projection of every x bin, gaussian fit in +- 2 sigma     -> <mode>_projections.root
-  5. sigma against x, fitted with sqrt((N/x)^2 + C^2)            -> <mode>_sigma.root/.png/.csv
+  3. all runs and energies of the same crystal(s) together: TH2 of Delta T against x with variable x bins of
+     --per-bin events each (as var_bins.C)                       -> <mode>_<crystals>_<x>_th2.root
+  4. Y projection of every x bin, gaussian fit in +- 2 sigma     -> ..._projections.root
+  5. sigma against x, fitted with sqrt((N/x)^2 + C^2)            -> ..._sigma.root/.png/.csv
 
 Usage
   python3 time_resolution.py --base <dir of per-run reco files> --outdir out_time \\
@@ -45,11 +52,9 @@ from common import runsets
 
 RESISTANCE_2025 = 500
 NS_PER_DIGITIZER_UNIT = 0.2       # mcp_t, clk_phase, clk_period are in units of 0.2 ns
-# MCP runs of the October 2025 test beam (README_2025.md of the h4docs bookkeeping)
-MCP_RUNS = (19582, 19583, 19579, 19580, 19581, 19578, 19576, 19577, 19574, 19575, 19572,
-            19573, 19614, 19571, 19565, 19566, 19564, 19567, 19568, 19569, 19632, 19633,
-            19626, 19587)
-MCP_CRYSTAL = (18, 6)
+# a run enters the MCP modes when at least this fraction of its events has both MCPs
+# above --mcp-min (runs without MCP, or with the MCPs off, have ~0-30 %)
+MCP_MIN_FRACTION = 0.5
 Y_RANGE_NS, Y_BIN_NS = 3.0, 0.005
 SLICE_FIT_SIGMAS, SLICE_FIT_ROUNDS, SLICE_MIN_ENTRIES = 2.0, 3, 50
 
@@ -76,42 +81,85 @@ def run_files(base):
     return files
 
 
-def two_crystal_runs(good_runs_csv):
-    """{run: ((eta_1, phi_1), (eta_2, phi_2))} for the rows of the good-run list whose
-    eta or phi column reads "a/b": the beam was aimed between those two crystals."""
+def good_runs(good_runs_csv):
+    """{run: dict(crystals, table)} from the good-run list. crystals is the pair the beam
+    was aimed between ("a/b" in the eta or phi column) or the same crystal twice."""
     runs = {}
     with open(good_runs_csv) as handle:
         for row in csv.DictReader(handle):
-            eta_text, phi_text = row["eta"].strip(), row["phi"].strip()
-            if "/" not in eta_text + phi_text:
+            try:
+                etas = [int(value) for value in row["eta"].strip().split("/")]
+                phis = [int(value) for value in row["phi"].strip().split("/")]
+            except ValueError:
                 continue
-            etas = [int(value) for value in eta_text.split("/")]
-            phis = [int(value) for value in phi_text.split("/")]
-            if len(etas) == 1:
-                etas = etas * 2
-            if len(phis) == 1:
-                phis = phis * 2
-            runs[int(row["Run"])] = ((etas[0], phis[0]), (etas[1], phis[1]))
+            etas, phis = etas * (2 // len(etas)), phis * (2 // len(phis))
+            runs[int(row["Run"])] = dict(crystals=((etas[0], phis[0]), (etas[1], phis[1])),
+                                         table=(row["Table X"].strip(), row["Table Y"].strip()))
     return runs
 
 
+def crystal_label(crystals):
+    (eta_1, phi_1), (eta_2, phi_2) = crystals
+    if crystals[0] == crystals[1]:
+        return f"eta{eta_1}_phi{phi_1}"
+    eta = f"{eta_1}" if eta_1 == eta_2 else f"{eta_1}-{eta_2}"
+    phi = f"{phi_1}" if phi_1 == phi_2 else f"{phi_1}-{phi_2}"
+    return f"eta{eta}_phi{phi}"
+
+
 def points_of(mode, files, good_runs_csv):
-    """One point per (crystal pair, energy): dict(energy, paths, crystals, centre)."""
-    if mode == "crystals":
-        pairs = two_crystal_runs(good_runs_csv)
-    else:
-        pairs = {run: (MCP_CRYSTAL, MCP_CRYSTAL) for run in MCP_RUNS}
+    """One point per (crystals, table position, energy): the hodoscope moves with the
+    table, so runs at different positions get their own window. The two-crystal runs
+    feed the crystals mode, the single-crystal runs the two MCP modes."""
     grouped = {}
-    for run, crystals in pairs.items():
-        if run not in files:
+    for run, info in good_runs(good_runs_csv).items():
+        crystals = info["crystals"]
+        if run not in files or (mode == "crystals") != (crystals[0] != crystals[1]):
             continue
         energy, path = files[run]
-        grouped.setdefault((crystals, energy), []).append(path)
-    points = []
-    for (crystals, energy), paths in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1])):
-        centre = (0.5 * (crystals[0][0] + crystals[1][0]), 0.5 * (crystals[0][1] + crystals[1][1]))
-        points.append(dict(energy=energy, paths=sorted(paths), crystals=crystals, centre=centre))
-    return points
+        grouped.setdefault((crystals, info["table"], energy), []).append((run, path))
+    return [dict(energy=energy, crystals=crystals, table=table, label=crystal_label(crystals),
+                 runs=[run for run, _path in sorted(members)],
+                 paths=[path for _run, path in sorted(members)])
+            for (crystals, table, energy), members in sorted(grouped.items())]
+
+
+ASYMMETRY_BIN_MM, ASYMMETRY_FIT_RANGE, ASYMMETRY_MIN_SPAN, ASYMMETRY_MIN_PER_BIN = 0.5, 0.5, 0.3, 100
+
+
+def boundary_vertices(events, base):
+    """{coordinate: hodoscope position where A_1 = A_2}, for the coordinates in which
+    the sharing between the two crystals changes sign (the other one is left out)."""
+    hodo_x, hodo_y = common.hodoscope_xy(events)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        asymmetry = (events["amp_1"] - events["amp_2"]) / (events["amp_1"] + events["amp_2"])
+    vertices = {}
+    for name, coordinate in (("x", hodo_x), ("y", hodo_y)):
+        usable = base & np.isfinite(coordinate) & np.isfinite(asymmetry)
+        if usable.sum() < 1000:
+            continue
+        edges = np.arange(np.percentile(coordinate[usable], 1), np.percentile(coordinate[usable], 99),
+                          ASYMMETRY_BIN_MM)
+        centres, means, errors = [], [], []
+        for low in edges:
+            in_bin = usable & (coordinate >= low) & (coordinate < low + ASYMMETRY_BIN_MM)
+            if in_bin.sum() < ASYMMETRY_MIN_PER_BIN:
+                continue
+            centres.append(coordinate[in_bin].mean())
+            means.append(asymmetry[in_bin].mean())
+            errors.append(asymmetry[in_bin].std() / math.sqrt(in_bin.sum()))
+        means = np.array(means)
+        if len(means) < 4 or means.max() < ASYMMETRY_MIN_SPAN or means.min() > -ASYMMETRY_MIN_SPAN:
+            continue
+        near = np.abs(means) < ASYMMETRY_FIT_RANGE
+        if near.sum() < 3:
+            continue
+        graph = common.make_graph(np.array(centres)[near], means[near], np.array(errors)[near])
+        line = ROOT.TF1(common.unique_name("asymmetry"), "pol1")
+        graph.Fit(line, "QN")
+        if line.GetParameter(1) != 0:
+            vertices[name] = -line.GetParameter(0) / line.GetParameter(1)
+    return vertices
 
 
 # ------------------------------------------------------------------ Delta T and x
@@ -223,7 +271,7 @@ def fit_slice(projection):
         function.SetRange(low, high)
         function.SetParameters(projection.GetMaximum(), mean, sigma)
         result = projection.Fit(function, "QRS0")
-        if result.Status() != 0 or function.GetParameter(2) <= 0:
+        if not result.Get() or result.Status() != 0 or function.GetParameter(2) <= 0:
             return None
         mean, sigma = function.GetParameter(1), abs(function.GetParameter(2))
     projection.GetListOfFunctions().Add(function)
@@ -240,66 +288,105 @@ def resolution_curve(name, low, high):
 
 
 # ------------------------------------------------------------------ one mode
+def mcp_live_runs(events, base, mcp_min):
+    """Runs where at least MCP_MIN_FRACTION of the base events have both MCPs above
+    mcp_min, and the fraction of every run."""
+    both = (events["mcp_amp_0"] > mcp_min) & (events["mcp_amp_1"] > mcp_min)
+    fractions = {int(run): float(both[base & (events["run"] == run)].mean())
+                 for run in np.unique(events["run"][base])}
+    return [run for run, fraction in fractions.items() if fraction >= MCP_MIN_FRACTION], fractions
+
+
+def analyse_point(mode, point, args, outdir, dropped, kept_only):
+    """Selection, Delta T and per-run correction of one point. Returns (selection row,
+    window row, per-run rows, {x name: (x, corrected Delta T)}) or the rows only when
+    the point is skipped."""
+    energy, crystals, label = point["energy"], point["crystals"], point["label"]
+    matrix_eta, matrix_phi = crystals[1]
+    events = common.read_events(point["paths"], matrix_eta, matrix_phi, "a3x3",
+                                extra=time_columns(mode, crystals))
+    base = ((events["A_tot"] > common.A_TOT_MIN)
+            & common.runset_mask(events["run"], dropped, kept_only))
+    row = dict(label=label, energy=energy, table=f"{point['table'][0]}/{point['table'][1]}",
+               runs=" ".join(str(run) for run in point["runs"]), n_events=len(events["run"]),
+               n_base=int(base.sum()), n_hodoscope=0, n_selected=0, runs_dropped="", reason="")
+    usable = base
+    if mode != "crystals":
+        live, fractions = mcp_live_runs(events, base, args.mcp_min)
+        dead = [run for run in fractions if run not in live]
+        row["runs_dropped"] = " ".join(f"{run}(mcp {100 * fractions[run]:.0f}%)" for run in dead)
+        usable = base & np.isin(events["run"], live)
+        if not live:
+            row["reason"] = "no run with both MCPs alive"
+            return row, None, [], {}
+
+    point_args = SimpleNamespace(**vars(args))
+    point_args.outdir = os.path.join(outdir, "windows", f"{label}_table{point['table'][0]}-{point['table'][1]}")
+    response, flat_vertices = None, None
+    if mode == "crystals":
+        response = events["amplitude"]                        # 3x3 sum, not A_tot
+        flat_vertices = boundary_vertices(events, base)
+        print(f"    boundary between the crystals on the hodoscope: {flat_vertices}")
+    window_row, cuts = selection.select_point(events, RESISTANCE_2025, energy, dropped, kept_only,
+                                              point_args, response=response,
+                                              vertex_when_flat=flat_vertices)
+    window_row.update(label=label, table=row["table"])
+    if cuts is None:
+        row["reason"] = window_row.get("reason", "")
+        return row, window_row, [], {}
+    position = cuts["nominal"] & usable
+    delta, x_values, valid = delta_and_x(mode, events, args)
+    selected = position & valid
+    corrected, run_rows = correct_per_run(mode, delta, events["run"], events["clk"], selected)
+    for run_row in run_rows:
+        run_row.update(energy=energy, label=label)
+    row.update(n_hodoscope=int(position.sum()), n_selected=int(selected.sum()))
+    print(f"    {row['n_base']} base, {row['n_hodoscope']} in the hodoscope window, "
+          f"{row['n_selected']} selected" + (f"; dropped {row['runs_dropped']}" if row["runs_dropped"] else ""),
+          flush=True)
+    pooled = {x_name: (x_array[selected], corrected[selected]) for x_name, x_array in x_values.items()}
+    return row, window_row, run_rows, pooled
+
+
 def analyse_mode(mode, files, args):
     outdir = os.path.join(args.outdir, mode)
     os.makedirs(outdir, exist_ok=True)
     dropped, kept_only = runsets.resolve(args.runset, args.exclude_runs)
-    selection_rows, run_rows = [], []
-    pooled = {}                       # x name -> (x list, y list)
+    selection_rows, window_rows, run_rows = [], [], []
+    pooled = {}                       # (crystal label, x name) -> (x list, y list)
     for point in points_of(mode, files, args.good_runs):
-        energy, crystals, centre = point["energy"], point["crystals"], point["centre"]
-        matrix_eta, matrix_phi = crystals[1]
-        print(f"[{mode} {energy:>4} GeV] crystals {crystals} centre {centre}, "
-              f"{len(point['paths'])} runs", flush=True)
-        events = common.read_events(point["paths"], matrix_eta, matrix_phi, "a3x3",
-                                    extra=time_columns(mode, crystals))
-        point_args = SimpleNamespace(**vars(args))
-        point_args.outdir = outdir
-        window_row, cuts = selection.select_point(events, RESISTANCE_2025, energy, dropped,
-                                                  kept_only, point_args)
-        if cuts is not None:
-            position = cuts["nominal"]
-            hodoscope_used = 1
-        elif args.hodoscope == "required":
-            print("    point dropped: no hodoscope window and --hodoscope required")
+        print(f"[{mode} {point['label']} table {point['table']} {point['energy']:>4} GeV] "
+              f"runs {point['runs']}", flush=True)
+        try:
+            row, window_row, rows, point_pooled = analyse_point(mode, point, args, outdir,
+                                                                dropped, kept_only)
+        except Exception as error:               # one bad file must not stop the night run
+            print(f"    FAILED: {type(error).__name__}: {error}", flush=True)
+            selection_rows.append(dict(label=point["label"], energy=point["energy"],
+                                       runs=" ".join(map(str, point["runs"])),
+                                       reason=f"{type(error).__name__}: {error}"))
             continue
-        else:
-            position = ((events["A_tot"] > common.A_TOT_MIN)
-                        & common.runset_mask(events["run"], dropped, kept_only))
-            hodoscope_used = 0
-            print("    hodoscope window not available: base cut only before the centroid cut")
-        centroid = selection.centroid_mask(events, centre[0], centre[1], args.centroid_half)
-        delta, x_values, valid = delta_and_x(mode, events, args)
-        selected = position & centroid & valid
-        corrected, rows = correct_per_run(mode, delta, events["run"], events["clk"], selected)
-        for row in rows:
-            row.update(energy=energy)
+        selection_rows.append(row)
+        if window_row:
+            window_rows.append(window_row)
         run_rows += rows
-        selection_rows.append(dict(energy=energy, crystals=f"{crystals[0]}/{crystals[1]}",
-                                   centre_eta=centre[0], centre_phi=centre[1],
-                                   n_runs=len(point["paths"]), n_events=len(delta),
-                                   n_base=window_row["n_base"], hodoscope=hodoscope_used,
-                                   n_position=int(position.sum()),
-                                   n_centroid=int((position & centroid).sum()),
-                                   n_selected=int(selected.sum()),
-                                   window_reason=window_row.get("reason", "")))
-        print(f"    {window_row['n_base']} base, {int(position.sum())} position, "
-              f"{int((position & centroid).sum())} centroid, {int(selected.sum())} selected", flush=True)
-        for x_name, x_array in x_values.items():
-            store = pooled.setdefault(x_name, ([], []))
-            store[0].append(x_array[selected])
-            store[1].append(corrected[selected])
+        for x_name, (x_array, y_array) in point_pooled.items():
+            store = pooled.setdefault((point["label"], x_name), ([], []))
+            store[0].append(x_array)
+            store[1].append(y_array)
 
     common.write_csv(os.path.join(outdir, f"{mode}_selection.csv"), selection_rows,
-                     ("energy", "crystals", "centre_eta", "centre_phi", "n_runs", "n_events",
-                      "n_base", "hodoscope", "n_position", "n_centroid", "n_selected",
-                      "window_reason"))
+                     ("label", "energy", "table", "runs", "n_events", "n_base", "n_hodoscope",
+                      "n_selected", "runs_dropped", "reason"))
+    common.write_csv(os.path.join(outdir, f"{mode}_windows.csv"), window_rows,
+                     ("label", "table", "resistance", "energy", "window", "n_base", "n_selected",
+                      "skipped", "reason", "x_lo", "x_hi", "y_lo", "y_hi", "x_vertex", "y_vertex",
+                      "x_ok", "y_ok", "x_why", "y_why", "fallback"))
     common.write_csv(os.path.join(outdir, f"{mode}_per_run.csv"), run_rows,
-                     ("run", "energy", "n_events", "offset_ns", "rms_ns"))
-    for x_name, (x_parts, y_parts) in pooled.items():
-        if x_parts:
-            resolution_vs_x(mode, x_name, np.concatenate(x_parts), np.concatenate(y_parts),
-                            outdir, args)
+                     ("label", "run", "energy", "n_events", "offset_ns", "rms_ns"))
+    for (label, x_name), (x_parts, y_parts) in sorted(pooled.items()):
+        resolution_vs_x(mode, label, x_name, np.concatenate(x_parts), np.concatenate(y_parts),
+                        outdir, args)
 
 
 X_TITLE = {"aeff_over_sigman": "#sqrt{2/((#sigma_{n}/A_{1})^{2}+(#sigma_{n}/A_{2})^{2})}",
@@ -309,8 +396,8 @@ Y_TITLE = {"crystals": "#sigma_{#DeltaT}/#sqrt{2} [ns]", "mcp-mcp": "#sigma_{#De
            "ecal-mcp": "#sigma_{t_{ECAL}-t_{MCP}} [ns]"}
 
 
-def resolution_vs_x(mode, x_name, x_values, y_values, outdir, args):
-    tag = f"{mode}_{x_name}"
+def resolution_vs_x(mode, label, x_name, x_values, y_values, outdir, args):
+    tag = f"{mode}_{label}_{x_name}"
     finite = np.isfinite(x_values) & np.isfinite(y_values) & (np.abs(y_values) < Y_RANGE_NS)
     x_values, y_values = x_values[finite], y_values[finite]
     if len(x_values) < args.per_bin:
@@ -410,10 +497,6 @@ def main():
     parser.add_argument("--per-bin", type=int, default=2000, help="events per x bin")
     parser.add_argument("--sigma-noise", type=float, default=2.5, help="ECAL noise sigma_n [ADC]")
     parser.add_argument("--mcp-min", type=float, default=60., help="cut on both mcp_A")
-    parser.add_argument("--centroid-half", type=float, default=0.2)
-    parser.add_argument("--hodoscope", choices=("optional", "required"), default="optional",
-                        help="optional: when the parabola gives no window the point keeps the "
-                             "base and centroid cuts only (column 'hodoscope' = 0)")
     parser.add_argument("--half", type=float, default=4., help="hodoscope half window [mm]")
     parser.add_argument("--yplane", choices=("y1", "y2"), default="y1")
     parser.add_argument("--fallback-file", default="fallback_none.py",

@@ -4,14 +4,12 @@ The event selection shared by the energy and the time resolution.
   base cut     A_tot > A_TOT_MIN and the run selection of runsets
   hodoscope    window around the vertex of the response parabola on the hodoscope
                (hodoscope_window.py), with its four +- 1 mm variations
-  centroid     |pos_eta - X| < half and |pos_phi - Y| < half around the point where the
-               beam was aimed; X or Y ends in .5 when the beam sat between two crystals
 
-select_point() applies the first two and records the diagnostics of the parabola
-study; fit_dcb_per_run.py (energy) and time_resolution.py (time) both start from it.
+select_point() applies both and records the diagnostics of the parabola study;
+fit_dcb_per_run.py (energy) and time_resolution.py (time) both start from it. The
+response profiled on the hodoscope is A_tot unless another one is given (the 3x3 sum
+when the beam was aimed between two crystals).
 """
-
-import numpy as np
 
 import common
 import hodoscope_window
@@ -19,12 +17,8 @@ import hodoscope_window
 MIN_EVENTS_IN_WINDOW = common.MIN_EVENTS_POOLED
 
 
-def centroid_mask(events, centre_eta, centre_phi, half=0.2):
-    return ((np.abs(events["pos_eta"] - centre_eta) < half)
-            & (np.abs(events["pos_phi"] - centre_phi) < half))
-
-
-def select_point(events, resistance, energy, dropped, kept_only, args):
+def select_point(events, resistance, energy, dropped, kept_only, args, response=None,
+                 vertex_when_flat=None):
     """Base cut and hodoscope window of one (resistance, energy) point.
 
     Returns (window_row, cuts): cuts is the dict of masks of
@@ -41,8 +35,10 @@ def select_point(events, resistance, energy, dropped, kept_only, args):
         return window_row, None
 
     hodo_x, hodo_y = common.hodoscope_xy(events, args.yplane)
-    info = hodoscope_window.hodoscope_windows(hodo_x, hodo_y, events["A_tot"], base, resistance,
-                                              energy, args.half, args.outdir, args.fallback_file)
+    response = events["A_tot"] if response is None else response
+    info = hodoscope_window.hodoscope_windows(hodo_x, hodo_y, response, base, resistance,
+                                              energy, args.half, args.outdir, args.fallback_file,
+                                              vertex_when_flat)
     for coordinate in ("x", "y"):
         scan = info["scan"][coordinate]
         window_row.update({f"{coordinate}_vertex": scan["vertex"],
@@ -52,6 +48,9 @@ def select_point(events, resistance, energy, dropped, kept_only, args):
     window_row["fallback"] = "+".join(info["fallback"])
     window_row["window"] = hodoscope_window.window_label(info["fallback"])
     for coordinate in info["fallback"]:
+        if coordinate.endswith("flat"):
+            print(f"    {coordinate[0]}: flat response, window centred on the given vertex")
+            continue
         reason = info["why"][coordinate]
         print(f"    {coordinate}: hand-set vertex of resolution_hodo.py"
               + (f" (scan failed: {reason})" if reason else " (overrides a successful scan)"))

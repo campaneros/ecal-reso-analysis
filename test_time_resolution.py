@@ -25,11 +25,20 @@ def test_fold_centres_a_distribution_across_the_clock_wrap():
     assert abs(np.std(corrected) - 0.5 * time_resolution.NS_PER_DIGITIZER_UNIT) < 0.01
 
 
-def test_two_crystal_runs_have_half_integer_centre():
+def test_two_crystal_runs_pair_the_neighbours():
     files = {19402: (60, "a"), 19441: (120, "b"), 19573: (100, "c")}
     points = time_resolution.points_of("crystals", files,
                                        os.path.join(HERE, "bookkeeping2025", "good_run_list_2025.csv"))
-    assert [point["centre"] for point in points] == [(18, 5.5), (53, 5.5)]
+    assert [point["crystals"] for point in points] == [((18, 5), (18, 6)), ((53, 5), (53, 6))]
+    assert [point["label"] for point in points] == ["eta18_phi5-6", "eta53_phi5-6"]
+
+
+def test_single_crystal_runs_go_to_the_mcp_modes():
+    files = {19402: (60, "a"), 19573: (100, "c"), 19680: (150, "d")}
+    points = time_resolution.points_of("mcp-mcp", files,
+                                       os.path.join(HERE, "bookkeeping2025", "good_run_list_2025.csv"))
+    assert [(point["label"], point["runs"]) for point in points] == [("eta18_phi6", [19573]),
+                                                                     ("eta53_phi6", [19680])]
 
 
 if __name__ == "__main__":
