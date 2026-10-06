@@ -25,13 +25,15 @@ def test_fold_centres_a_distribution_across_the_clock_wrap():
     assert abs(np.std(corrected) - 0.5 * time_resolution.NS_PER_DIGITIZER_UNIT) < 0.01
 
 
-def test_gain_states_get_their_own_offset():
+def test_offset_measured_on_high_gain_and_applied_to_every_state():
     rng = np.random.default_rng(3)
     state = np.repeat([0, 1, 2], 1000)
-    delta = rng.normal(0, 0.05, 3000) + np.array([0., 1.5, -1.5])[state]
+    delta = 0.7 + rng.normal(0, 0.05, 3000) + np.array([0., 1.5, -1.5])[state]
     corrected, rows = time_resolution.correct_per_run("crystals", delta, np.ones(3000, int),
-                                                      np.full(3000, 31.2), np.ones(3000, bool), state)
-    assert len(rows) == 3 and np.std(corrected) < 0.06
+                                                      np.full(3000, 31.2), np.ones(3000, bool), state == 0)
+    assert len(rows) == 1
+    assert abs(np.median(corrected[state == 0])) < 0.01
+    assert abs(np.median(corrected[state == 1]) - 1.5) < 0.01
 
 
 def test_two_crystal_runs_pair_the_neighbours():

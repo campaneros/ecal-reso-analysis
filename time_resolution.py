@@ -24,12 +24,14 @@ Chain, for every mode
   1. per point: the selection of the energy resolution (selection.py): A_tot cut,
      run selection, hodoscope window from the parabola study; a point without a
      window is skipped, as in fit_dcb_per_run.py;
-  2. per run and per gain state (gs of the crystals: the low gain moves the time by
-     ~1.5 ns): the median (circular mean for ecal-mcp) of Delta T is subtracted;
+  2. gain: the low gain (gs = 1) moves the time of a crystal by ~1.5 ns; the inclusive
+     Delta T of every gain state is drawn (<mode>_<crystals>_inclusive.png/.root) and
+     only the events with every crystal in high gain are kept; per run, the median
+     (circular mean for ecal-mcp) of their Delta T is subtracted;
   3. all runs and energies of the same crystal(s) together: TH2 of Delta T against x with variable x bins of
      --per-bin events each (as var_bins.C)                       -> <mode>_<crystals>_<x>_th2.root
   4. Y projection of every x bin, gaussian fit in +- 2 sigma     -> ..._projections.root
-  5. sigma against x, fitted with sqrt((N/x)^2 + C^2)            -> ..._sigma.root/.png/.csv
+  5. sigma against x, fitted with N/x (+) C, plus S/sqrt(x) for the two crystals            -> ..._sigma.root/.png/.csv
 
 Usage
   python3 time_resolution.py --base <dir of per-run reco files> --outdir out_time \\
@@ -57,7 +59,7 @@ NS_PER_DIGITIZER_UNIT = 0.2       # mcp_t, clk_phase, clk_period are in units of
 # above --mcp-min (runs without MCP, or with the MCPs off, have ~0-30 %)
 MCP_MIN_FRACTION = 0.5
 MIN_EVENTS_PER_GROUP = 50         # events of a (run, gain state) needed to measure its offset
-Y_RANGE_NS, Y_BIN_NS = 3.0, 0.005
+Y_RANGE_NS, Y_BIN_NS = 3.0, 0.01                 # var_bins.C: 650 bins on 6.25 ns
 SLICE_FIT_SIGMAS, SLICE_FIT_ROUNDS, SLICE_MIN_ENTRIES = 2.0, 3, 50
 SEED_MIN_PEAK_COUNTS = 30
 SLICE_MIN_PEAK_FRACTION = 0.2     # events under the gaussian, below it the slice has no peak
@@ -229,9 +231,15 @@ def delta_and_x(mode, events, args):
     return raw, {"aecal_over_sigman": x_ecal, "mcp_aeff": mcp_aeff}, valid
 
 
+GAIN_LABEL = {"crystals": {0: "both high gain", 1: "crystal 2 low gain", 2: "crystal 1 low gain",
+                          3: "both low gain"},
+              "ecal-mcp": {0: "high gain", 1: "low gain"}, "mcp-mcp": {0: "all"}}
+
+
 def gain_state(mode, events):
-    """0 = every crystal used in high gain; the gain switch (gs = 1) moves the time of
-    a crystal by ~1.5 ns, so every combination gets its own offset.
+    """0 = every crystal used in high gain. The gain switch (gs = 1) moves the time of
+    a crystal by ~1.5 ns: the inclusive Delta T has one peak per state (three for two
+    crystals, two for ECAL-MCP) and only state 0 is kept.
     crystals: 2*gs_1 + gs_2; ecal-mcp: gs of the crystal; mcp-mcp: 0."""
     if mode == "crystals":
         return (2 * np.nan_to_num(events["gain_1"]) + np.nan_to_num(events["gain_2"])).astype(int)
@@ -240,32 +248,34 @@ def gain_state(mode, events):
     return np.zeros(len(events["run"]), int)
 
 
-def correct_per_run(mode, delta, run, clk, selected, state=None):
-    """Subtract the centre of Delta T of every (run, gain state). Groups with fewer
-    than MIN_EVENTS_PER_GROUP events are left out (NaN). Returns (corrected in ns, rows)."""
+def correct_per_run(mode, delta, run, clk, selected, reference=None):
+    """Subtract, run by run, the centre of Delta T measured on the reference events
+    (high gain; all when None) from every selected event of the run. Runs with fewer
+    than MIN_EVENTS_PER_GROUP reference events are left out (NaN).
+    Returns (corrected in ns, rows)."""
     corrected = np.full(len(delta), np.nan)
-    state = np.zeros(len(delta), int) if state is None else state
+    reference = np.ones(len(delta), bool) if reference is None else reference
     rows = []
-    for this_run, this_state in sorted(set(zip(run[selected].tolist(), state[selected].tolist()))):
-        in_run = selected & (run == this_run) & (state == this_state)
-        if in_run.sum() < MIN_EVENTS_PER_GROUP:
-            rows.append(dict(run=int(this_run), gain_state=int(this_state),
-                             n_events=int(in_run.sum()), offset_ns=np.nan, rms_ns=np.nan))
+    for this_run in np.unique(run[selected]):
+        in_run = selected & (run == this_run)
+        measured = in_run & reference
+        if measured.sum() < MIN_EVENTS_PER_GROUP:
+            rows.append(dict(run=int(this_run), n_events=int(measured.sum()), offset_ns=np.nan,
+                             rms_ns=np.nan))
             continue
         if mode == "ecal-mcp":
-            period = clk[in_run]
-            angle = 2 * np.pi * delta[in_run] / period
+            angle = 2 * np.pi * delta[measured] / clk[measured]
             offset_angle = math.atan2(np.sin(angle).mean(), np.cos(angle).mean())
+            period = clk[in_run]
             shifted = delta[in_run] - offset_angle * period / (2 * np.pi)
-            folded = np.mod(shifted + 0.5 * period, period) - 0.5 * period
-            corrected[in_run] = NS_PER_DIGITIZER_UNIT * folded
+            corrected[in_run] = NS_PER_DIGITIZER_UNIT * (np.mod(shifted + 0.5 * period, period)
+                                                         - 0.5 * period)
             offset = NS_PER_DIGITIZER_UNIT * offset_angle * np.median(period) / (2 * np.pi)
         else:
-            offset = float(np.median(delta[in_run]))
+            offset = float(np.median(delta[measured]))
             corrected[in_run] = delta[in_run] - offset
-        rows.append(dict(run=int(this_run), gain_state=int(this_state),
-                         n_events=int(in_run.sum()), offset_ns=float(offset),
-                         rms_ns=float(np.std(corrected[in_run]))))
+        rows.append(dict(run=int(this_run), n_events=int(measured.sum()), offset_ns=float(offset),
+                         rms_ns=float(np.std(corrected[measured]))))
     return corrected, rows
 
 
@@ -346,6 +356,18 @@ def resolution_curve(name, low, high):
     return function
 
 
+def resolution_curve_stochastic(name, low, high):
+    """sigma = N/x (+) S/sqrt(x) (+) C, for the two crystals: N in ns, S in ns, C in ns."""
+    function = ROOT.TF1(name, "sqrt(pow([0]/x, 2) + pow([1], 2)/x + pow([2], 2))", low, high)
+    function.SetParNames("N", "S", "C")
+    function.SetParameters(10., 0.3, 0.03)
+    return function
+
+
+# unit and scale of every fitted parameter, for the printout, the CSV and the box
+PARAMETER_UNIT = {"N": ("ns", 1.), "S": ("ns", 1.), "C": ("ps", 1000.)}
+
+
 # ------------------------------------------------------------------ one mode
 def mcp_live_runs(events, base, mcp_min):
     """Runs where at least MCP_MIN_FRACTION of the base events have both MCPs above
@@ -403,16 +425,56 @@ def analyse_point(mode, point, args, outdir, dropped, kept_only):
     position = cuts["nominal"] & usable
     delta, x_values, valid = delta_and_x(mode, events, args)
     selected = position & valid
+    state = gain_state(mode, events)
+    high_gain = state == 0
     corrected, run_rows = correct_per_run(mode, delta, events["run"], events["clk"], selected,
-                                          gain_state(mode, events))
+                                          high_gain)
     for run_row in run_rows:
         run_row.update(energy=energy, label=label)
-    row.update(n_hodoscope=int(position.sum()), n_selected=int(selected.sum()))
+    kept = selected & high_gain
+    row.update(n_hodoscope=int(position.sum()), n_selected=int(selected.sum()),
+               n_high_gain=int(kept.sum()))
     print(f"    {row['n_base']} base, {row['n_hodoscope']} in the hodoscope window, "
-          f"{row['n_selected']} selected" + (f"; dropped {row['runs_dropped']}" if row["runs_dropped"] else ""),
-          flush=True)
-    pooled = {x_name: (x_array[selected], corrected[selected]) for x_name, x_array in x_values.items()}
+          f"{row['n_selected']} selected, {row['n_high_gain']} in high gain"
+          + (f"; dropped {row['runs_dropped']}" if row["runs_dropped"] else ""), flush=True)
+    pooled = {x_name: (x_array[kept], corrected[kept]) for x_name, x_array in x_values.items()}
+    pooled[INCLUSIVE] = (state[selected], corrected[selected])
     return row, window_row, run_rows, pooled
+
+
+INCLUSIVE = "inclusive"     # key of the pooled (gain state, Delta T) of every selected event
+
+
+def draw_inclusive(mode, label, states, deltas, outdir):
+    """Delta T of every selected event, all gain states, one histogram per state."""
+    tag = f"{mode}_{label}_inclusive"
+    n_bins = int(round(2 * Y_RANGE_NS / Y_BIN_NS))
+    total = common.fill_histogram(f"h_{tag}", deltas[np.isfinite(deltas)], n_bins, -Y_RANGE_NS, Y_RANGE_NS)
+    total.SetTitle(f"{mode} {label}, all selected events;#DeltaT [ns];events")
+    canvas = ROOT.TCanvas(f"c_{tag}", tag, 1000, 650)
+    canvas.SetLogy()
+    total.SetLineColor(ROOT.kBlack)
+    total.SetLineWidth(2)
+    total.Draw("hist")
+    legend = common.keep(ROOT.TLegend(0.62, 0.70, 0.89, 0.88))
+    legend.AddEntry(total, f"all ({int(total.GetEntries())})", "l")
+    output = ROOT.TFile(os.path.join(outdir, f"{tag}.root"), "RECREATE")
+    total.Write()
+    colours = (ROOT.kBlue + 1, ROOT.kRed + 1, ROOT.kGreen + 2, ROOT.kMagenta + 1)
+    for state, name in GAIN_LABEL[mode].items():
+        in_state = (states == state) & np.isfinite(deltas)
+        if not in_state.any() or len(GAIN_LABEL[mode]) == 1:
+            continue
+        histogram = common.keep(common.fill_histogram(f"h_{tag}_gain{state}", deltas[in_state],
+                                                      n_bins, -Y_RANGE_NS, Y_RANGE_NS))
+        histogram.SetLineColor(colours[state])
+        histogram.Draw("hist same")
+        histogram.Write()
+        legend.AddEntry(histogram, f"{name} ({int(in_state.sum())})", "l")
+    legend.Draw()
+    canvas.Write()
+    output.Close()
+    common.save_canvas(canvas, os.path.join(outdir, f"{tag}.png"))
 
 
 def analyse_mode(mode, files, args):
@@ -444,14 +506,17 @@ def analyse_mode(mode, files, args):
 
     common.write_csv(os.path.join(outdir, f"{mode}_selection.csv"), selection_rows,
                      ("label", "energy", "table", "runs", "n_events", "n_base", "n_hodoscope",
-                      "n_selected", "runs_dropped", "reason"))
+                      "n_selected", "n_high_gain", "runs_dropped", "reason"))
     common.write_csv(os.path.join(outdir, f"{mode}_windows.csv"), window_rows,
                      ("label", "table", "resistance", "energy", "window", "n_base", "n_selected",
                       "skipped", "reason", "x_lo", "x_hi", "y_lo", "y_hi", "x_vertex", "y_vertex",
                       "x_ok", "y_ok", "x_why", "y_why", "fallback"))
     common.write_csv(os.path.join(outdir, f"{mode}_per_run.csv"), run_rows,
-                     ("label", "run", "energy", "gain_state", "n_events", "offset_ns", "rms_ns"))
+                     ("label", "run", "energy", "n_events", "offset_ns", "rms_ns"))
     for (label, x_name), (x_parts, y_parts) in sorted(pooled.items()):
+        if x_name == INCLUSIVE:
+            draw_inclusive(mode, label, np.concatenate(x_parts), np.concatenate(y_parts), outdir)
+            continue
         resolution_vs_x(mode, label, x_name, np.concatenate(x_parts), np.concatenate(y_parts),
                         outdir, args)
 
@@ -503,19 +568,24 @@ def resolution_vs_x(mode, label, x_name, x_values, y_values, outdir, args):
                               [row["err_sigma_ns"] for row in rows])
     graph.SetName(f"g_{tag}")
     graph.SetTitle(f";{X_TITLE[x_name]};{Y_TITLE[mode]}")
-    curve = resolution_curve(f"f_{tag}", rows[0]["x_low"], rows[-1]["x_high"])
+    make_curve = resolution_curve_stochastic if mode == "crystals" else resolution_curve
+    curve = make_curve(f"f_{tag}", rows[0]["x_low"], rows[-1]["x_high"])
     result = common.fit_graph(graph, curve)
-    noise, constant = result["values"]
-    err_noise, err_constant = result["errors"]
-    print(f"    {tag}: N = {noise:.3f} +- {err_noise:.3f} ns, C = {1000 * constant:.2f} +- "
-          f"{1000 * err_constant:.2f} ps, chi2/ndf = {result['chi2']:.1f}/{result['ndf']}", flush=True)
+    names = [curve.GetParName(index) for index in range(curve.GetNpar())]
+    parameters = {}
+    for name, value, error in zip(names, result["values"], result["errors"]):
+        unit, scale = PARAMETER_UNIT[name]
+        parameters[f"{name}_{unit}"] = value * scale
+        parameters[f"err_{name}_{unit}"] = error * scale
+    print(f"    {tag}: " + ", ".join(f"{name} = {parameters[f'{name}_{PARAMETER_UNIT[name][0]}']:.3f} +- "
+                                    f"{parameters[f'err_{name}_{PARAMETER_UNIT[name][0]}']:.3f} {PARAMETER_UNIT[name][0]}"
+                                    for name in names)
+          + f", chi2/ndf = {result['chi2']:.1f}/{result['ndf']}", flush=True)
     for row in rows:
-        row.update(N_ns=noise, err_N_ns=err_noise, C_ps=1000 * constant,
-                   err_C_ps=1000 * err_constant, fit_chi2=result["chi2"], fit_ndf=result["ndf"])
+        row.update(parameters, fit_chi2=result["chi2"], fit_ndf=result["ndf"])
     common.write_csv(os.path.join(outdir, f"{tag}_sigma.csv"), rows,
                      ("bin", "x_low", "x_high", "x_mean", "x_rms", "n_events", "mean_ns", "sigma_ns",
-                      "err_sigma_ns", "chi2", "ndf", "N_ns", "err_N_ns", "C_ps", "err_C_ps",
-                      "fit_chi2", "fit_ndf"))
+                      "err_sigma_ns", "chi2", "ndf") + tuple(parameters) + ("fit_chi2", "fit_ndf"))
     draw_resolution(tag, graph, curve, result, th2, outdir)
 
 
@@ -531,11 +601,13 @@ def draw_resolution(tag, graph, curve, result, th2, outdir):
     curve.SetLineColor(ROOT.kRed)
     curve.SetLineWidth(2)
     curve.Draw("same")
-    noise, constant = result["values"]
-    err_noise, err_constant = result["errors"]
-    box = common.keep(common.text_box(
-        [f"N = {noise:.2f} #pm {err_noise:.2f} ns", f"C = {1000 * constant:.1f} #pm {1000 * err_constant:.1f} ps",
-         f"#chi^{{2}}/ndf = {result['chi2']:.0f}/{result['ndf']}"], 0.58, 0.68, 0.88, 0.88, size=0.035))
+    lines = []
+    for index, (value, error) in enumerate(zip(result["values"], result["errors"])):
+        name = curve.GetParName(index)
+        unit, scale = PARAMETER_UNIT[name]
+        lines.append(f"{name} = {value * scale:.3g} #pm {error * scale:.2g} {unit}")
+    lines.append(f"#chi^{{2}}/ndf = {result['chi2']:.0f}/{result['ndf']}")
+    box = common.keep(common.text_box(lines, 0.58, 0.62, 0.88, 0.88, size=0.035))
     box.Draw()
     output = ROOT.TFile(os.path.join(outdir, f"{tag}_sigma.root"), "RECREATE")
     graph.Write()
