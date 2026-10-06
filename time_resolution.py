@@ -378,6 +378,7 @@ def fit_slice_dcb(projection):
     fitted_sigma = function.GetParameter(5)
     if fitted_sigma > SLICE_MAX_SIGMA_NS:
         return None
+    common.keep(function)          # the projection holds a raw pointer to it until written
     projection.GetListOfFunctions().Add(function)
     return dict(mean=function.GetParameter(4), sigma=fitted_sigma, err_sigma=function.GetParError(5),
                 chi2=function.GetChisquare(), ndf=function.GetNDF())
