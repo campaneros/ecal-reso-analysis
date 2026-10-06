@@ -600,6 +600,46 @@ def draw_x_distribution(tag, x_name, x_values, edges, outdir):
     common.save_canvas(canvas, os.path.join(outdir, f"{tag}_x_distribution.png"))
 
 
+PANELS_PER_PAGE, PANEL_COLUMNS = 16, 4
+
+
+def draw_projection_pages(projections_path, pdf_path):
+    """Delta T of every x bin with its fit, PANELS_PER_PAGE per page of one PDF. The
+    x range of each panel is the fitted peak +- 8 sigma (the whole window when the
+    slice was not fitted), so two populations in one bin show up at once."""
+    handle = ROOT.TFile.Open(projections_path)
+    names = sorted((key.GetName() for key in handle.GetListOfKeys()),
+                   key=lambda name: int(name.rsplit("_", 1)[1]))
+    canvas = ROOT.TCanvas(common.unique_name("pages"), "projections", 1600, 1200)
+    pages = max(1, math.ceil(len(names) / PANELS_PER_PAGE))
+    for page in range(pages):
+        canvas.Clear()
+        canvas.Divide(PANEL_COLUMNS, PANELS_PER_PAGE // PANEL_COLUMNS)
+        for slot, name in enumerate(names[page * PANELS_PER_PAGE:(page + 1) * PANELS_PER_PAGE]):
+            pad = canvas.cd(slot + 1)
+            pad.SetLogy()
+            histogram = common.keep(handle.Get(name))
+            functions = histogram.GetListOfFunctions()
+            fitted = functions.GetSize() > 0
+            if fitted:
+                function = functions.At(0)
+                centre = function.GetParameter(4 if function.GetNpar() == 7 else 1)
+                width = abs(function.GetParameter(5 if function.GetNpar() == 7 else 2))
+                histogram.GetXaxis().SetRangeUser(centre - 8 * width, centre + 8 * width)
+                function.SetLineColor(ROOT.kRed)
+            histogram.SetLineColor(ROOT.kBlack)
+            histogram.SetTitleSize(0.07)
+            histogram.SetTitle(histogram.GetTitle().split(": ", 1)[-1].split(";")[0]
+                               + ("" if fitted else "  (no fit)"))
+            histogram.Draw("hist")
+            if fitted:
+                function.Draw("same")
+        suffix = "(" if page == 0 and pages > 1 else (")" if page == pages - 1 and pages > 1 else "")
+        canvas.Print(pdf_path + suffix, "pdf")
+    handle.Close()
+    print("->", pdf_path, f"({len(names)} bins, {pages} pages)")
+
+
 def resolution_vs_x(mode, label, x_name, x_values, y_values, outdir, args):
     tag = f"{mode}_{label}_{x_name}"
     finite = np.isfinite(x_values) & np.isfinite(y_values) & (np.abs(y_values) < Y_RANGE_NS)
@@ -633,6 +673,8 @@ def resolution_vs_x(mode, label, x_name, x_values, y_values, outdir, args):
                          mean_ns=fit["mean"], sigma_ns=fit["sigma"] * scale,
                          err_sigma_ns=fit["err_sigma"] * scale, chi2=fit["chi2"], ndf=fit["ndf"]))
     projection_file.Close()
+    draw_projection_pages(os.path.join(outdir, f"{tag}_projections.root"),
+                          os.path.join(outdir, f"{tag}_projections.pdf"))
     if len(rows) < 3:
         print(f"    {tag}: {len(rows)} usable slices, no resolution fit")
         return
