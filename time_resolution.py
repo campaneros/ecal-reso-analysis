@@ -355,6 +355,34 @@ def fit_slice(projection):
                 chi2=function.GetChisquare(), ndf=function.GetNDF())
 
 
+DCB_SLICE_RANGE_SIGMAS = 6.      # DCB fitted in +- this many seed sigmas around the peak
+
+
+def fit_slice_dcb(projection):
+    """Double Crystal Ball of var_bins.C on one slice; sigma is the width of its core."""
+    if projection.GetEntries() < SLICE_MIN_ENTRIES:
+        return None
+    mean, sigma = peak_seed(projection)
+    low = max(mean - DCB_SLICE_RANGE_SIGMAS * sigma, -Y_RANGE_NS)
+    high = min(mean + DCB_SLICE_RANGE_SIGMAS * sigma, Y_RANGE_NS)
+    function = ROOT.TF1(common.unique_name("slice_dcb"), ROOT.pipeline_dcb, low, high, 7)
+    for index, name in enumerate(common.DCB_PARAMETERS):
+        function.SetParName(index, name)
+    function.SetParameters(2., 2., 2., 2., mean, sigma, projection.GetMaximum())
+    for index, (lower, upper) in enumerate(((0.1, 10), (0.1, 10), (1, 10), (1, 10), (low, high),
+                                            (0.1 * sigma, high - low))):
+        function.SetParLimits(index, lower, upper)
+    result = projection.Fit(function, "QRS0")
+    if not result.Get() or result.Status() != 0:
+        return None
+    fitted_sigma = function.GetParameter(5)
+    if fitted_sigma > SLICE_MAX_SIGMA_NS:
+        return None
+    projection.GetListOfFunctions().Add(function)
+    return dict(mean=function.GetParameter(4), sigma=fitted_sigma, err_sigma=function.GetParError(5),
+                chi2=function.GetChisquare(), ndf=function.GetNDF())
+
+
 def resolution_curve_stochastic(name, low, high):
     """sigma = N/x (+) S/sqrt(x) (+) C, N, S and C in ns (x dimensionless or ADC)."""
     function = ROOT.TF1(name, "sqrt(pow([0]/x, 2) + pow([1], 2)/x + pow([2], 2))", low, high)
@@ -407,6 +435,15 @@ def analyse_point(mode, point, args, outdir, dropped, kept_only):
             row["reason"] = "no run with both MCPs alive"
             return row, None, [], {}
 
+    if args.position == "centroid":
+        centre_eta = 0.5 * (crystals[0][0] + crystals[1][0])
+        centre_phi = 0.5 * (crystals[0][1] + crystals[1][1])
+        position = usable & selection.centroid_mask(events, centre_eta, centre_phi,
+                                                    args.centroid_half)
+        print(f"    centroid cut |pos_eta - {centre_eta}| < {args.centroid_half}, "
+              f"|pos_phi - {centre_phi}| < {args.centroid_half}")
+        return finish_point(mode, events, args, row, None, position, energy, label)
+
     point_args = SimpleNamespace(**vars(args))
     point_args.outdir = os.path.join(outdir, "windows",
                                      f"{crystal_label(crystals)}_table{point['table'][0]}-{point['table'][1]}")
@@ -422,7 +459,11 @@ def analyse_point(mode, point, args, outdir, dropped, kept_only):
     if cuts is None:
         row["reason"] = window_row.get("reason", "")
         return row, window_row, [], {}
-    position = cuts["nominal"] & usable
+    return finish_point(mode, events, args, row, window_row, cuts["nominal"] & usable, energy, label)
+
+
+def finish_point(mode, events, args, row, window_row, position, energy, label):
+    """Delta T, gain selection and per-run correction of the events inside position."""
     delta, x_values, valid = delta_and_x(mode, events, args)
     selected = position & valid
     state = gain_state(mode, events)
@@ -434,7 +475,7 @@ def analyse_point(mode, point, args, outdir, dropped, kept_only):
     kept = selected & high_gain
     row.update(n_hodoscope=int(position.sum()), n_selected=int(selected.sum()),
                n_high_gain=int(kept.sum()))
-    print(f"    {row['n_base']} base, {row['n_hodoscope']} in the hodoscope window, "
+    print(f"    {row['n_base']} base, {row['n_hodoscope']} in the position cut, "
           f"{row['n_selected']} selected, {row['n_high_gain']} in high gain"
           + (f"; dropped {row['runs_dropped']}" if row["runs_dropped"] else ""), flush=True)
     pooled = {x_name: (x_array[kept], corrected[kept]) for x_name, x_array in x_values.items()}
@@ -580,7 +621,7 @@ def resolution_vs_x(mode, label, x_name, x_values, y_values, outdir, args):
         projection = th2.ProjectionY(f"py_{tag}_{index}", index, index)
         low, high = th2.GetXaxis().GetBinLowEdge(index), th2.GetXaxis().GetBinUpEdge(index)
         projection.SetTitle(f"{tag} bin {index}: x in [{low:.4g}, {high:.4g}];#DeltaT [ns];events")
-        fit = fit_slice(projection)
+        fit = fit_slice_dcb(projection) if args.slice_fit == "dcb" else fit_slice(projection)
         projection_file.cd()
         projection.Write()
         if fit is None:
@@ -668,6 +709,14 @@ def main():
     parser.add_argument("--sigma-noise", type=float, default=2.5, help="ECAL noise sigma_n [ADC]")
     parser.add_argument("--mcp-min", type=float, default=60., help="cut on both mcp_A")
     parser.add_argument("--half", type=float, default=4., help="hodoscope half window [mm]")
+    parser.add_argument("--position", choices=("hodoscope", "centroid"), default="hodoscope",
+                        help="position cut: the hodoscope window of the energy resolution, or "
+                             "|pos_eta - X| < --centroid-half && |pos_phi - Y| < --centroid-half "
+                             "around the beam centre (X or Y ends in .5 between two crystals)")
+    parser.add_argument("--centroid-half", type=float, default=0.2)
+    parser.add_argument("--slice-fit", choices=("gaus", "dcb"), default="gaus",
+                        help="fit of every Y projection: gaussian in +-2 sigma, or the double "
+                             "Crystal Ball of var_bins.C")
     parser.add_argument("--yplane", choices=("y1", "y2"), default="y1")
     parser.add_argument("--fallback-file", default="fallback_none.py",
                         help="hand-set hodoscope vertices; the 2025 ones belong to other runs")

@@ -17,6 +17,12 @@ import hodoscope_window
 MIN_EVENTS_IN_WINDOW = common.MIN_EVENTS_POOLED
 
 
+def centroid_mask(events, centre_eta, centre_phi, half=0.2):
+    """|pos_eta - X| < half and |pos_phi - Y| < half around the beam centre."""
+    return ((abs(events["pos_eta"] - centre_eta) < half)
+            & (abs(events["pos_phi"] - centre_phi) < half))
+
+
 def select_point(events, resistance, energy, dropped, kept_only, args, response=None,
                  vertex_when_flat=None):
     """Base cut and hodoscope window of one (resistance, energy) point.
