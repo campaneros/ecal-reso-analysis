@@ -24,7 +24,7 @@ Chain, for every mode
   1. per point: the selection of the energy resolution (selection.py): A_tot cut,
      run selection, hodoscope window from the parabola study; a point without a
      window is skipped, as in fit_dcb_per_run.py;
-  2. gain: the low gain (gs = 1) moves the time of a crystal by ~1.5 ns; the inclusive
+  2. gain: the low gain (lg_nsample > 0) moves the time of a crystal by ~1.5 ns; the inclusive
      Delta T of every gain state is drawn (<mode>_<crystals>_inclusive.png/.root) and
      only the events with every crystal in high gain are kept; per run, the median
      (circular mean for ecal-mcp) of their Delta T is subtracted;
@@ -197,8 +197,8 @@ def time_columns(mode, crystals):
             "amp_2": f"pipeline_crystal_value(A, sel_ieta, sel_iphi, {eta_2}, {phi_2})",
             "time_1": f"pipeline_crystal_value(t, sel_ieta, sel_iphi, {eta_1}, {phi_1})",
             "time_2": f"pipeline_crystal_value(t, sel_ieta, sel_iphi, {eta_2}, {phi_2})",
-            "gain_1": f"pipeline_crystal_value(gs, sel_ieta, sel_iphi, {eta_1}, {phi_1})",
-            "gain_2": f"pipeline_crystal_value(gs, sel_ieta, sel_iphi, {eta_2}, {phi_2})"})
+            "gain_1": f"(double)(pipeline_crystal_value(lg_nsample, sel_ieta, sel_iphi, {eta_1}, {phi_1}) > 0)",
+            "gain_2": f"(double)(pipeline_crystal_value(lg_nsample, sel_ieta, sel_iphi, {eta_2}, {phi_2}) > 0)"})
     if mode == "crystals":
         return columns
     columns.update({"mcp_amp_0": "(double)mcp_A[0]", "mcp_amp_1": "(double)mcp_A[1]",
@@ -208,7 +208,7 @@ def time_columns(mode, crystals):
             "phase": "(double)clk_phase",
             "amp_1": f"pipeline_crystal_value(A, sel_ieta, sel_iphi, {eta_1}, {phi_1})",
             "time_1": f"pipeline_crystal_value(t, sel_ieta, sel_iphi, {eta_1}, {phi_1})",
-            "gain_1": f"pipeline_crystal_value(gs, sel_ieta, sel_iphi, {eta_1}, {phi_1})"})
+            "gain_1": f"(double)(pipeline_crystal_value(lg_nsample, sel_ieta, sel_iphi, {eta_1}, {phi_1}) > 0)"})
     return columns
 
 
@@ -245,10 +245,12 @@ GAIN_LABEL = {"crystals": {0: "both high gain", 1: "crystal 2 low gain", 2: "cry
 
 
 def gain_state(mode, events):
-    """0 = every crystal used in high gain. The gain switch (gs = 1) moves the time of
+    """0 = every crystal used in high gain (lg_nsample = 0: no sample read in low gain;
+    it agrees with gs = 1 on 99.97 % of the events and drops the few gs = 1 flags at
+    ~800-1000 ADC). The gain switch moves the time of
     a crystal by ~1.5 ns: the inclusive Delta T has one peak per state (three for two
     crystals, two for ECAL-MCP) and only state 0 is kept.
-    crystals: 2*gs_1 + gs_2; ecal-mcp: gs of the crystal; mcp-mcp: 0."""
+    crystals: 2*low_1 + low_2; ecal-mcp: low gain of the crystal; mcp-mcp: 0."""
     if mode == "crystals":
         return (2 * np.nan_to_num(events["gain_1"]) + np.nan_to_num(events["gain_2"])).astype(int)
     if mode == "ecal-mcp":
