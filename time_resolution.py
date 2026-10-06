@@ -28,10 +28,12 @@ Chain, for every mode
      Delta T of every gain state is drawn (<mode>_<crystals>_inclusive.png/.root) and
      only the events with every crystal in high gain are kept; per run, the median
      (circular mean for ecal-mcp) of their Delta T is subtracted;
-  3. all runs and energies of the same crystal(s) together: TH2 of Delta T against x with variable x bins of
-     --per-bin events each (as var_bins.C)                       -> <mode>_<crystals>_<x>_th2.root
+  3. all runs and energies of the same crystal(s) together (every run for mcp-mcp):
+     distribution of x (<..>_x_distribution.png/.root) and TH2 of Delta T against x
+     with variable x bins of --per-bin events each, built from the highest x down
+                                                                 -> <mode>_<crystals>_<x>_th2.root
   4. Y projection of every x bin, gaussian fit in +- 2 sigma     -> ..._projections.root
-  5. sigma against x, fitted with N/x (+) C, plus S/sqrt(x) for the two crystals            -> ..._sigma.root/.png/.csv
+  5. sigma against x, fitted with N/x (+) S/sqrt(x) (+) C            -> ..._sigma.root/.png/.csv
 
 Usage
   python3 time_resolution.py --base <dir of per-run reco files> --outdir out_time \\
@@ -127,15 +129,19 @@ def crystal_label(crystals):
 def points_of(mode, files, good_runs_csv):
     """One point per (crystals, table position, energy): the hodoscope moves with the
     table, so runs at different positions get their own window. The two-crystal runs
-    feed the crystals mode, the single-crystal runs the two MCP modes."""
+    feed the crystals mode, the single-crystal runs ecal-mcp, every run mcp-mcp (the
+    MCPs do not depend on the crystal: one result, label "all")."""
     grouped = {}
     for run, info in good_runs(good_runs_csv).items():
         crystals = info["crystals"]
-        if run not in files or (mode == "crystals") != (crystals[0] != crystals[1]):
+        two_crystals = crystals[0] != crystals[1]
+        if run not in files or (mode == "crystals" and not two_crystals) \
+                or (mode == "ecal-mcp" and two_crystals):
             continue
         energy, path = files[run]
         grouped.setdefault((crystals, info["table"], energy), []).append((run, path))
-    return [dict(energy=energy, crystals=crystals, table=table, label=crystal_label(crystals),
+    return [dict(energy=energy, crystals=crystals, table=table,
+                 label="all" if mode == "mcp-mcp" else crystal_label(crystals),
                  runs=[run for run, _path in sorted(members)],
                  paths=[path for _run, path in sorted(members)])
             for (crystals, table, energy), members in sorted(grouped.items())]
@@ -184,7 +190,7 @@ def time_columns(mode, crystals):
     """Expressions read from the tree for this mode."""
     (eta_1, phi_1), (eta_2, phi_2) = crystals
     columns = {"clk": "(double)clk_period"}
-    if mode == "crystals":
+    if crystals[0] != crystals[1] or mode == "crystals":
         columns.update({
             "amp_1": f"pipeline_crystal_value(A, sel_ieta, sel_iphi, {eta_1}, {phi_1})",
             "amp_2": f"pipeline_crystal_value(A, sel_ieta, sel_iphi, {eta_2}, {phi_2})",
@@ -192,6 +198,7 @@ def time_columns(mode, crystals):
             "time_2": f"pipeline_crystal_value(t, sel_ieta, sel_iphi, {eta_2}, {phi_2})",
             "gain_1": f"pipeline_crystal_value(gs, sel_ieta, sel_iphi, {eta_1}, {phi_1})",
             "gain_2": f"pipeline_crystal_value(gs, sel_ieta, sel_iphi, {eta_2}, {phi_2})"})
+    if mode == "crystals":
         return columns
     columns.update({"mcp_amp_0": "(double)mcp_A[0]", "mcp_amp_1": "(double)mcp_A[1]",
                     "mcp_time_0": "(double)mcp_t[0]", "mcp_time_1": "(double)mcp_t[1]"})
@@ -281,19 +288,19 @@ def correct_per_run(mode, delta, run, clk, selected, reference=None):
 
 # ------------------------------------------------------------------ histograms and fits
 def variable_edges(x_values, per_bin):
-    """Edges with per_bin events each (var_bins.C): a last bin with fewer than half of
-    per_bin events is merged into the previous one."""
+    """Edges with per_bin events in every bin, built from the highest x downwards: the
+    highest bin holds per_bin events, then the next one down, and so on. The events
+    left over at the lowest x (fewer than per_bin) join the lowest bin, so no event
+    is dropped and no bin has fewer than per_bin."""
     ordered = np.sort(x_values)
     count = len(ordered)
-    edges = [float(ordered[0])]
-    for index in range(per_bin, count, per_bin):
+    edges = [float(np.nextafter(ordered[-1], np.inf))]
+    for index in range(count - per_bin, per_bin - 1, -per_bin):
         edge = 0.5 * (ordered[index - 1] + ordered[index])
-        if edge > edges[-1]:
+        if edge < edges[-1]:
             edges.append(float(edge))
-    if count % per_bin and (count % per_bin) < per_bin / 2 and len(edges) > 1:
-        edges.pop()
-    edges.append(float(np.nextafter(ordered[-1], np.inf)))
-    return np.array(edges)
+    edges.append(float(ordered[0]))
+    return np.array(edges[::-1])
 
 
 def fill_th2(name, title, x_values, y_values, edges):
@@ -348,16 +355,8 @@ def fit_slice(projection):
                 chi2=function.GetChisquare(), ndf=function.GetNDF())
 
 
-def resolution_curve(name, low, high):
-    """sigma = N/x (+) C, N in ns (x dimensionless or ADC), C in ns."""
-    function = ROOT.TF1(name, "sqrt(pow([0]/x, 2) + pow([1], 2))", low, high)
-    function.SetParNames("N", "C")
-    function.SetParameters(15., 0.03)
-    return function
-
-
 def resolution_curve_stochastic(name, low, high):
-    """sigma = N/x (+) S/sqrt(x) (+) C, for the two crystals: N in ns, S in ns, C in ns."""
+    """sigma = N/x (+) S/sqrt(x) (+) C, N, S and C in ns (x dimensionless or ADC)."""
     function = ROOT.TF1(name, "sqrt(pow([0]/x, 2) + pow([1], 2)/x + pow([2], 2))", low, high)
     function.SetParNames("N", "S", "C")
     function.SetParameters(10., 0.3, 0.03)
@@ -409,9 +408,10 @@ def analyse_point(mode, point, args, outdir, dropped, kept_only):
             return row, None, [], {}
 
     point_args = SimpleNamespace(**vars(args))
-    point_args.outdir = os.path.join(outdir, "windows", f"{label}_table{point['table'][0]}-{point['table'][1]}")
+    point_args.outdir = os.path.join(outdir, "windows",
+                                     f"{crystal_label(crystals)}_table{point['table'][0]}-{point['table'][1]}")
     response, flat_vertices = None, None
-    if mode == "crystals":
+    if crystals[0] != crystals[1]:
         response = events["amplitude"]                        # 3x3 sum, not A_tot
         flat_vertices = boundary_vertices(events, base)
         print(f"    boundary between the crystals on the hodoscope: {flat_vertices}")
@@ -528,6 +528,36 @@ Y_TITLE = {"crystals": "#sigma_{#DeltaT}/#sqrt{2} [ns]", "mcp-mcp": "#sigma_{#De
            "ecal-mcp": "#sigma_{t_{ECAL}-t_{MCP}} [ns]"}
 
 
+X_DISTRIBUTION_BINS = 400
+
+
+def draw_x_distribution(tag, x_name, x_values, edges, outdir):
+    """Every event of the TH2 against x, with the variable bin edges on top."""
+    histogram = common.fill_histogram(f"hx_{tag}", x_values, X_DISTRIBUTION_BINS, 0.,
+                                      float(edges[-1]) * 1.02)
+    histogram.SetTitle(f"{tag}: {len(x_values)} events, {len(edges) - 1} bins;{X_TITLE[x_name]};events")
+    canvas = ROOT.TCanvas(f"cx_{tag}", tag, 1000, 650)
+    canvas.SetLogy()
+    histogram.SetLineColor(ROOT.kBlack)
+    histogram.Draw("hist")
+    canvas.Update()
+    lines = []
+    for edge in edges:
+        line = ROOT.TLine(edge, 0.5, edge, histogram.GetMaximum() * 2)
+        line.SetLineColor(ROOT.kRed)
+        line.SetLineStyle(2)
+        line.Draw()
+        lines.append(line)
+    common.keep(*lines)
+    edge_histogram = ROOT.TH1D(f"edges_{tag}", "variable bin edges", len(edges) - 1, np.asarray(edges, float))
+    output = ROOT.TFile(os.path.join(outdir, f"{tag}_x_distribution.root"), "RECREATE")
+    histogram.Write()
+    edge_histogram.Write()
+    canvas.Write()
+    output.Close()
+    common.save_canvas(canvas, os.path.join(outdir, f"{tag}_x_distribution.png"))
+
+
 def resolution_vs_x(mode, label, x_name, x_values, y_values, outdir, args):
     tag = f"{mode}_{label}_{x_name}"
     finite = np.isfinite(x_values) & np.isfinite(y_values) & (np.abs(y_values) < Y_RANGE_NS)
@@ -537,6 +567,7 @@ def resolution_vs_x(mode, label, x_name, x_values, y_values, outdir, args):
         return
     edges = variable_edges(x_values, args.per_bin)
     print(f"    {tag}: {len(x_values)} events -> {len(edges) - 1} x bins", flush=True)
+    draw_x_distribution(tag, x_name, x_values, edges, outdir)
     th2 = fill_th2(f"h2_{tag}", f";{X_TITLE[x_name]};#DeltaT [ns]", x_values, y_values, edges)
     th2_file = ROOT.TFile(os.path.join(outdir, f"{tag}_th2.root"), "RECREATE")
     th2.Write()
@@ -568,8 +599,7 @@ def resolution_vs_x(mode, label, x_name, x_values, y_values, outdir, args):
                               [row["err_sigma_ns"] for row in rows])
     graph.SetName(f"g_{tag}")
     graph.SetTitle(f";{X_TITLE[x_name]};{Y_TITLE[mode]}")
-    make_curve = resolution_curve_stochastic if mode == "crystals" else resolution_curve
-    curve = make_curve(f"f_{tag}", rows[0]["x_low"], rows[-1]["x_high"])
+    curve = resolution_curve_stochastic(f"f_{tag}", rows[0]["x_low"], rows[-1]["x_high"])
     result = common.fit_graph(graph, curve)
     names = [curve.GetParName(index) for index in range(curve.GetNpar())]
     parameters = {}
@@ -633,7 +663,8 @@ def main():
                         default=["crystals", "mcp-mcp", "ecal-mcp"])
     parser.add_argument("--good-runs", default=os.path.join(common.HERE, "bookkeeping2025",
                                                             "good_run_list_2025.csv"))
-    parser.add_argument("--per-bin", type=int, default=2000, help="events per x bin")
+    parser.add_argument("--per-bin", type=int, default=3000,
+                        help="events in every x bin, counted from the highest x down")
     parser.add_argument("--sigma-noise", type=float, default=2.5, help="ECAL noise sigma_n [ADC]")
     parser.add_argument("--mcp-min", type=float, default=60., help="cut on both mcp_A")
     parser.add_argument("--half", type=float, default=4., help="hodoscope half window [mm]")

@@ -9,10 +9,10 @@ import time_resolution
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def test_variable_edges_merge_short_last_bin():
+def test_bins_built_from_the_top_with_per_bin_events_each():
     x_values = np.random.default_rng(1).uniform(0, 100, 9500)
-    counts = np.histogram(x_values, time_resolution.variable_edges(x_values, 2000))[0]
-    assert list(counts) == [2000, 2000, 2000, 2000, 1500]
+    counts = np.histogram(x_values, time_resolution.variable_edges(x_values, 3000))[0]
+    assert list(counts) == [3500, 3000, 3000]          # the leftover joins the lowest bin
 
 
 def test_fold_centres_a_distribution_across_the_clock_wrap():
@@ -44,12 +44,15 @@ def test_two_crystal_runs_pair_the_neighbours():
     assert [point["label"] for point in points] == ["eta18_phi5-6", "eta53_phi5-6"]
 
 
-def test_single_crystal_runs_go_to_the_mcp_modes():
+def test_mcp_mcp_takes_every_run_ecal_mcp_the_single_crystal_ones():
     files = {19402: (60, "a"), 19573: (100, "c"), 19680: (150, "d")}
-    points = time_resolution.points_of("mcp-mcp", files,
-                                       os.path.join(HERE, "bookkeeping2025", "good_run_list_2025.csv"))
-    assert [(point["label"], point["runs"]) for point in points] == [("eta18_phi6", [19573]),
-                                                                     ("eta53_phi6", [19680])]
+    csv_path = os.path.join(HERE, "bookkeeping2025", "good_run_list_2025.csv")
+    ecal_mcp = time_resolution.points_of("ecal-mcp", files, csv_path)
+    assert [(point["label"], point["runs"]) for point in ecal_mcp] == [("eta18_phi6", [19573]),
+                                                                       ("eta53_phi6", [19680])]
+    mcp_mcp = time_resolution.points_of("mcp-mcp", files, csv_path)
+    assert sorted(run for point in mcp_mcp for run in point["runs"]) == [19402, 19573, 19680]
+    assert {point["label"] for point in mcp_mcp} == {"all"}
 
 
 if __name__ == "__main__":
