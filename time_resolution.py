@@ -57,6 +57,7 @@ from common import runsets
 
 RESISTANCE_2025 = 500
 NS_PER_DIGITIZER_UNIT = 0.2       # mcp_t, clk_phase, clk_period are in units of 0.2 ns
+ECAL_SAMPLE_NS = 6.25             # ECAL sampling period: t is in samples, same clock for every crystal
 # a run enters the MCP modes when at least this fraction of its events has both MCPs
 # above --mcp-min (runs without MCP, or with the MCPs off, have ~0-30 %)
 MCP_MIN_FRACTION = 0.5
@@ -215,7 +216,7 @@ def delta_and_x(mode, events, args):
     """(Delta T in ns before the per-run correction, {x name: x}, validity mask)."""
     if mode == "crystals":
         amp_1, amp_2 = events["amp_1"], events["amp_2"]
-        delta = NS_PER_DIGITIZER_UNIT * events["clk"] * (events["time_1"] - events["time_2"])
+        delta = ECAL_SAMPLE_NS * (events["time_1"] - events["time_2"])
         with np.errstate(divide="ignore", invalid="ignore"):
             x_value = np.sqrt(2. / ((args.sigma_noise / amp_1) ** 2 + (args.sigma_noise / amp_2) ** 2))
         valid = (amp_1 > 0) & (amp_2 > 0) & np.isfinite(delta)
