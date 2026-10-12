@@ -1,16 +1,3 @@
-#!/usr/bin/env python3
-"""
-Skim of the per-run reco files for the time analysis: keeps only the branches the
-time stages read, so that the files fit through a web area and a slow link.
-
-  python3 skim_time.py --source <Reco dir> --outdir <dir> [--runs 19564 19565 ...]
-
-Every *.root file under --source (recursively) is skimmed to <outdir>/<same name>.
-A file whose tree lacks one of the wanted branches keeps the ones it has and says
-which are missing. Run it on lxplus with ROOT, e.g.
-  source /cvmfs/sft.cern.ch/lcg/views/LCG_107/x86_64-el9-gcc13-opt/setup.sh
-"""
-
 import argparse
 import glob
 import os
@@ -33,8 +20,10 @@ def run_of(path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description="Keep only the branches the time analysis reads from the per-run reco files.",
+        epilog="example:\n  python3 skim_time.py --source reco_dir --outdir skim_dir --runs 19564 19565",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--source", required=True)
     parser.add_argument("--outdir", required=True)
     parser.add_argument("--runs", nargs="*", type=int, default=[],

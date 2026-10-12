@@ -1,5 +1,3 @@
-"""python3 test_time_resolution.py -- checks of the binning, the per-run fold and the run sets."""
-
 import os
 
 import numpy as np
@@ -12,7 +10,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 def test_bins_built_from_the_top_with_per_bin_events_each():
     x_values = np.random.default_rng(1).uniform(0, 100, 9500)
     counts = np.histogram(x_values, time_resolution.variable_edges(x_values, 3000))[0]
-    assert list(counts) == [3500, 3000, 3000]          # the leftover joins the lowest bin
+    assert list(counts) == [3500, 3000, 3000]
 
 
 def test_fold_centres_a_distribution_across_the_clock_wrap():

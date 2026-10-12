@@ -1,45 +1,3 @@
-#!/usr/bin/env python3
-"""
-Time resolution, after the selection shared with the energy resolution (selection.py).
-
-Modes
-  crystals  Delta T between the two crystals the beam was aimed between (runs with
-            "5/6" in the eta or phi column of the good-run list). The hodoscope
-            parabola profiles the 3x3 sum rebuilt from A, not the seed-based A_tot,
-            so that the response is flat across the boundary; in the coordinate where
-            it is flat (no maximum) the window is centred on the boundary, the zero of
-            (A_1 - A_2)/(A_1 + A_2) (pol1 fit). x = A_eff / sigma_n =
-            sqrt(2 / ((sigma_n/A_1)^2 + (sigma_n/A_2)^2)), y = sigma(Delta T)/sqrt(2).
-  mcp-mcp   Delta T between the two MCPs, both with mcp_A > --mcp-min;
-            x = 2 / (1/mcp_A[0] + 1/mcp_A[1]), y = sigma(Delta T)/sqrt(2).
-  ecal-mcp  ECAL time of the target crystal minus the MCP time (mean of the two MCPs,
-            both above --mcp-min), folded on the clock period as in var_bins.C; the
-            fold offset is the circular mean of each run instead of a fixed constant.
-            Two sets of outputs: x = A_ecal / sigma_n and x = MCP A_eff. y = sigma.
-
-Chain, for every mode
-  0. runs: every run of the good-run list with a reco file; "a/b" rows go to the
-     crystals mode, single-crystal rows to the MCP modes, keeping only the runs with
-     both MCPs alive (MCP_MIN_FRACTION); points = (crystals, table position, energy);
-  1. per point: the selection of the energy resolution (selection.py): A_tot cut,
-     run selection, hodoscope window from the parabola study; a point without a
-     window is skipped, as in fit_dcb_per_run.py;
-  2. gain: the low gain (lg_nsample > 0) moves the time of a crystal by ~1.5 ns; the inclusive
-     Delta T of every gain state is drawn (<mode>_<crystals>_inclusive.png/.root) and
-     only the events with every crystal in high gain are kept; per run, the median
-     (circular mean for ecal-mcp) of their Delta T is subtracted;
-  3. all runs and energies of the same crystal(s) together (every run for mcp-mcp):
-     distribution of x (<..>_x_distribution.png/.root) and TH2 of Delta T against x
-     with variable x bins of --per-bin events each, built from the highest x down
-                                                                 -> <mode>_<crystals>_<x>_th2.root
-  4. Y projection of every x bin, gaussian fit in +- 2 sigma     -> ..._projections.root
-  5. sigma against x, fitted with N/x (+) S/sqrt(x) (+) C            -> ..._sigma.root/.png/.csv
-
-Usage
-  python3 time_resolution.py --base <dir of per-run reco files> --outdir out_time \\
-      --mode crystals mcp-mcp ecal-mcp --good-runs bookkeeping2025/good_run_list_2025.csv
-"""
-
 import argparse
 import csv
 import glob
@@ -56,20 +14,18 @@ import selection
 from common import runsets
 
 RESISTANCE_2025 = 500
-NS_PER_DIGITIZER_UNIT = 0.2       # mcp_t, clk_phase, clk_period are in units of 0.2 ns
-ECAL_SAMPLE_NS = 6.25             # ECAL sampling period: t is in samples, same clock for every crystal
-# a run enters the MCP modes when at least this fraction of its events has both MCPs
-# above --mcp-min (runs without MCP, or with the MCPs off, have ~0-30 %)
+NS_PER_DIGITIZER_UNIT = 0.2
+ECAL_SAMPLE_NS = 6.25
 MCP_MIN_FRACTION = 0.5
-MIN_EVENTS_PER_GROUP = 50         # events of a (run, gain state) needed to measure its offset
-Y_RANGE_NS, Y_BIN_NS = 3.0, 0.01                 # var_bins.C: 650 bins on 6.25 ns
+MIN_EVENTS_PER_GROUP = 50
+Y_RANGE_NS, Y_BIN_NS = 3.0, 0.01
 SLICE_FIT_SIGMAS, SLICE_FIT_ROUNDS, SLICE_MIN_ENTRIES = 2.0, 3, 50
 SEED_MIN_PEAK_COUNTS = 30
-SLICE_MIN_PEAK_FRACTION = 0.2     # events under the gaussian, below it the slice has no peak
-SLICE_MAX_SIGMA_NS = 1.0          # wider than this the slice is flat over the +-3 ns window
+SLICE_MIN_PEAK_FRACTION = 0.2
+TITLE = ""
+SLICE_MAX_SIGMA_NS = 1.0
 
 ROOT.gInterpreter.Declare(r'''
-// value of the crystal (eta, phi) in a per-crystal vector of the reco, NaN if absent
 template <typename Values, typename Index>
 double pipeline_crystal_value(const Values &values, const Index &ieta, const Index &iphi,
                               int eta, int phi) {
@@ -80,9 +36,7 @@ double pipeline_crystal_value(const Values &values, const Index &ieta, const Ind
 ''')
 
 
-# ------------------------------------------------------------------ run sets
 def run_files(base):
-    """{run: (energy, path)} of the per-run reco files <run>_<E>_reco.root."""
     files = {}
     for path in glob.glob(os.path.join(base, "*.root")):
         match = re.match(r"(\d+)_(\d+)", os.path.basename(path))
@@ -92,7 +46,6 @@ def run_files(base):
 
 
 def has_events(path):
-    """False for the reco files with no event (runs stopped at the start, e.g. 19702)."""
     handle = ROOT.TFile.Open(path)
     tree = handle.Get("h4_reco") if handle and not handle.IsZombie() else None
     entries = tree.GetEntries() if tree else 0
@@ -102,8 +55,6 @@ def has_events(path):
 
 
 def good_runs(good_runs_csv):
-    """{run: dict(crystals, table)} from the good-run list. crystals is the pair the beam
-    was aimed between ("a/b" in the eta or phi column) or the same crystal twice."""
     runs = {}
     with open(good_runs_csv) as handle:
         for row in csv.DictReader(handle):
@@ -128,10 +79,6 @@ def crystal_label(crystals):
 
 
 def points_of(mode, files, good_runs_csv):
-    """One point per (crystals, table position, energy): the hodoscope moves with the
-    table, so runs at different positions get their own window. The two-crystal runs
-    feed the crystals mode, the single-crystal runs ecal-mcp, every run mcp-mcp (the
-    MCPs do not depend on the crystal: one result, label "all")."""
     grouped = {}
     for run, info in good_runs(good_runs_csv).items():
         crystals = info["crystals"]
@@ -152,8 +99,6 @@ ASYMMETRY_BIN_MM, ASYMMETRY_FIT_RANGE, ASYMMETRY_MIN_SPAN, ASYMMETRY_MIN_PER_BIN
 
 
 def boundary_vertices(events, base):
-    """{coordinate: hodoscope position where A_1 = A_2}, for the coordinates in which
-    the sharing between the two crystals changes sign (the other one is left out)."""
     hodo_x, hodo_y = common.hodoscope_xy(events)
     with np.errstate(divide="ignore", invalid="ignore"):
         asymmetry = (events["amp_1"] - events["amp_2"]) / (events["amp_1"] + events["amp_2"])
@@ -186,9 +131,7 @@ def boundary_vertices(events, base):
     return vertices
 
 
-# ------------------------------------------------------------------ Delta T and x
 def time_columns(mode, crystals):
-    """Expressions read from the tree for this mode."""
     (eta_1, phi_1), (eta_2, phi_2) = crystals
     columns = {"clk": "(double)clk_period"}
     if crystals[0] != crystals[1] or mode == "crystals":
@@ -198,7 +141,9 @@ def time_columns(mode, crystals):
             "time_1": f"pipeline_crystal_value(t, sel_ieta, sel_iphi, {eta_1}, {phi_1})",
             "time_2": f"pipeline_crystal_value(t, sel_ieta, sel_iphi, {eta_2}, {phi_2})",
             "gain_1": f"(double)(pipeline_crystal_value(lg_nsample, sel_ieta, sel_iphi, {eta_1}, {phi_1}) > 0)",
-            "gain_2": f"(double)(pipeline_crystal_value(lg_nsample, sel_ieta, sel_iphi, {eta_2}, {phi_2}) > 0)"})
+            "gain_2": f"(double)(pipeline_crystal_value(lg_nsample, sel_ieta, sel_iphi, {eta_2}, {phi_2}) > 0)",
+            "fit_1": f"pipeline_crystal_value(fit_status, sel_ieta, sel_iphi, {eta_1}, {phi_1})",
+            "fit_2": f"pipeline_crystal_value(fit_status, sel_ieta, sel_iphi, {eta_2}, {phi_2})"})
     if mode == "crystals":
         return columns
     columns.update({"mcp_amp_0": "(double)mcp_A[0]", "mcp_amp_1": "(double)mcp_A[1]",
@@ -208,18 +153,22 @@ def time_columns(mode, crystals):
             "phase": "(double)clk_phase",
             "amp_1": f"pipeline_crystal_value(A, sel_ieta, sel_iphi, {eta_1}, {phi_1})",
             "time_1": f"pipeline_crystal_value(t, sel_ieta, sel_iphi, {eta_1}, {phi_1})",
-            "gain_1": f"(double)(pipeline_crystal_value(lg_nsample, sel_ieta, sel_iphi, {eta_1}, {phi_1}) > 0)"})
+            "gain_1": f"(double)(pipeline_crystal_value(lg_nsample, sel_ieta, sel_iphi, {eta_1}, {phi_1}) > 0)",
+            "fit_1": f"pipeline_crystal_value(fit_status, sel_ieta, sel_iphi, {eta_1}, {phi_1})"})
     return columns
 
 
 def delta_and_x(mode, events, args):
-    """(Delta T in ns before the per-run correction, {x name: x}, validity mask)."""
     if mode == "crystals":
         amp_1, amp_2 = events["amp_1"], events["amp_2"]
         delta = ECAL_SAMPLE_NS * (events["time_1"] - events["time_2"])
         with np.errstate(divide="ignore", invalid="ignore"):
             x_value = np.sqrt(2. / ((args.sigma_noise / amp_1) ** 2 + (args.sigma_noise / amp_2) ** 2))
-        valid = (amp_1 > 0) & (amp_2 > 0) & np.isfinite(delta)
+        valid = (amp_1 > 0) & (amp_2 > 0) & np.isfinite(delta) & (events["fit_1"] == 0) & (events["fit_2"] == 0)
+        if args.amp_max:
+            valid &= (amp_1 < args.amp_max) & (amp_2 < args.amp_max)
+        if args.second_larger:
+            valid &= amp_2 > amp_1
         return delta, {"aeff_over_sigman": x_value}, valid
 
     mcp_0, mcp_1 = events["mcp_amp_0"], events["mcp_amp_1"]
@@ -230,12 +179,11 @@ def delta_and_x(mode, events, args):
         delta = NS_PER_DIGITIZER_UNIT * (events["mcp_time_0"] - events["mcp_time_1"])
         return delta, {"mcp_aeff": mcp_aeff}, mcp_ok & np.isfinite(delta)
 
-    # ecal-mcp: raw difference in digitizer units, folded later run by run
     mcp_time = 0.5 * (events["mcp_time_0"] + events["mcp_time_1"])
     raw = events["time_1"] * events["clk"] + events["phase"] - mcp_time
     with np.errstate(divide="ignore", invalid="ignore"):
         x_ecal = events["amp_1"] / args.sigma_noise
-    valid = mcp_ok & (events["amp_1"] > 0) & np.isfinite(raw)
+    valid = mcp_ok & (events["amp_1"] > 0) & np.isfinite(raw) & (events["fit_1"] == 0)
     return raw, {"aecal_over_sigman": x_ecal, "mcp_aeff": mcp_aeff}, valid
 
 
@@ -245,12 +193,6 @@ GAIN_LABEL = {"crystals": {0: "both high gain", 1: "crystal 2 low gain", 2: "cry
 
 
 def gain_state(mode, events):
-    """0 = every crystal used in high gain (lg_nsample = 0: no sample read in low gain;
-    it agrees with gs = 1 on 99.97 % of the events and drops the few gs = 1 flags at
-    ~800-1000 ADC). The gain switch moves the time of
-    a crystal by ~1.5 ns: the inclusive Delta T has one peak per state (three for two
-    crystals, two for ECAL-MCP) and only state 0 is kept.
-    crystals: 2*low_1 + low_2; ecal-mcp: low gain of the crystal; mcp-mcp: 0."""
     if mode == "crystals":
         return (2 * np.nan_to_num(events["gain_1"]) + np.nan_to_num(events["gain_2"])).astype(int)
     if mode == "ecal-mcp":
@@ -259,10 +201,6 @@ def gain_state(mode, events):
 
 
 def correct_per_run(mode, delta, run, clk, selected, reference=None):
-    """Subtract, run by run, the centre of Delta T measured on the reference events
-    (high gain; all when None) from every selected event of the run. Runs with fewer
-    than MIN_EVENTS_PER_GROUP reference events are left out (NaN).
-    Returns (corrected in ns, rows)."""
     corrected = np.full(len(delta), np.nan)
     reference = np.ones(len(delta), bool) if reference is None else reference
     rows = []
@@ -289,12 +227,7 @@ def correct_per_run(mode, delta, run, clk, selected, reference=None):
     return corrected, rows
 
 
-# ------------------------------------------------------------------ histograms and fits
 def variable_edges(x_values, per_bin):
-    """Edges with per_bin events in every bin, built from the highest x downwards: the
-    highest bin holds per_bin events, then the next one down, and so on. The events
-    left over at the lowest x (fewer than per_bin) join the lowest bin, so no event
-    is dropped and no bin has fewer than per_bin."""
     ordered = np.sort(x_values)
     count = len(ordered)
     edges = [float(np.nextafter(ordered[-1], np.inf))]
@@ -304,6 +237,39 @@ def variable_edges(x_values, per_bin):
             edges.append(float(edge))
     edges.append(float(ordered[0]))
     return np.array(edges[::-1])
+
+
+def draw_uniform_th2(tag, x_name, x_values, y_values, outdir, n_bins):
+    x_max = 50. * math.ceil(float(np.nanmax(x_values)) / 50.)
+    edges = np.linspace(0., x_max, n_bins + 1)
+    histogram = fill_th2(f"h2u_{tag}", f"{TITLE};{X_TITLE[x_name]};#DeltaT [ns]", x_values, y_values, edges)
+    canvas = ROOT.TCanvas(f"c2u_{tag}", tag, 1000, 650)
+    canvas.SetLogz()
+    canvas.SetRightMargin(0.13)
+    histogram.Draw("colz")
+    output = ROOT.TFile(os.path.join(outdir, f"{tag}_th2_uniform.root"), "RECREATE")
+    histogram.Write()
+    canvas.Write()
+    output.Close()
+    common.save_canvas(canvas, os.path.join(outdir, f"{tag}_th2_uniform.png"))
+
+
+def adaptive_edges(x_values, n_fine, min_events):
+    low, high = np.percentile(x_values, [0.1, 99.9])
+    grid = np.linspace(low, high, n_fine + 1)
+    grid[0], grid[-1] = min(float(x_values.min()), grid[0]), max(float(x_values.max()), grid[-1])
+    counts, _ = np.histogram(x_values, bins=grid)
+    edges, filled = [float(np.nextafter(grid[-1], np.inf))], 0
+    for index in range(n_fine - 1, -1, -1):
+        filled += counts[index]
+        if filled >= min_events and index > 0:
+            edges.append(float(grid[index]))
+            filled = 0
+    edges.append(float(grid[0]))
+    edges = np.array(edges[::-1])
+    if len(edges) > 2 and np.histogram(x_values, bins=edges)[0][0] < min_events:
+        edges = np.delete(edges, 1)
+    return edges
 
 
 def fill_th2(name, title, x_values, y_values, edges):
@@ -316,10 +282,6 @@ def fill_th2(name, title, x_values, y_values, edges):
 
 
 def peak_seed(projection):
-    """(position of the maximum, FWHM / 2.355): the RMS of a slice is inflated by the
-    flat tails and would drag the gaussian far wider than the peak. The bins are
-    merged until the highest holds SEED_MIN_PEAK_COUNTS, so that a wide peak with few
-    counts per bin is not read from a single fluctuation."""
     projection = projection.Clone(common.unique_name("seed"))
     while projection.GetMaximum() < SEED_MIN_PEAK_COUNTS and projection.GetNbinsX() % 2 == 0:
         projection.Rebin(2)
@@ -336,7 +298,6 @@ def peak_seed(projection):
 
 
 def fit_slice(projection):
-    """Gaussian in +- SLICE_FIT_SIGMAS sigma, re-centred SLICE_FIT_ROUNDS times."""
     if projection.GetEntries() < SLICE_MIN_ENTRIES:
         return None
     mean, sigma = peak_seed(projection)
@@ -352,17 +313,16 @@ def fit_slice(projection):
         mean, sigma = function.GetParameter(1), abs(function.GetParameter(2))
     peak_events = function.GetParameter(0) * sigma * math.sqrt(2 * math.pi) / projection.GetBinWidth(1)
     if peak_events < SLICE_MIN_PEAK_FRACTION * projection.GetEntries() or sigma > SLICE_MAX_SIGMA_NS:
-        return None                               # no peak: a noise-only slice
+        return None
     projection.GetListOfFunctions().Add(function)
     return dict(mean=mean, sigma=sigma, err_sigma=function.GetParError(2),
                 chi2=function.GetChisquare(), ndf=function.GetNDF())
 
 
-DCB_SLICE_RANGE_SIGMAS = 6.      # DCB fitted in +- this many seed sigmas around the peak
+DCB_SLICE_RANGE_SIGMAS = 6.
 
 
 def fit_slice_dcb(projection):
-    """Double Crystal Ball of var_bins.C on one slice; sigma is the width of its core."""
     if projection.GetEntries() < SLICE_MIN_ENTRIES:
         return None
     mean, sigma = peak_seed(projection)
@@ -381,28 +341,23 @@ def fit_slice_dcb(projection):
     fitted_sigma = function.GetParameter(5)
     if fitted_sigma > SLICE_MAX_SIGMA_NS:
         return None
-    common.keep(function)          # the projection holds a raw pointer to it until written
+    common.keep(function)
     projection.GetListOfFunctions().Add(function)
     return dict(mean=function.GetParameter(4), sigma=fitted_sigma, err_sigma=function.GetParError(5),
                 chi2=function.GetChisquare(), ndf=function.GetNDF())
 
 
-def resolution_curve_stochastic(name, low, high):
-    """sigma = N/x (+) S/sqrt(x) (+) C, N, S and C in ns (x dimensionless or ADC)."""
-    function = ROOT.TF1(name, "sqrt(pow([0]/x, 2) + pow([1], 2)/x + pow([2], 2))", low, high)
-    function.SetParNames("N", "S", "C")
-    function.SetParameters(10., 0.3, 0.03)
+def resolution_curve(name, low, high):
+    function = ROOT.TF1(name, "sqrt(pow([0]/x, 2) + pow([1], 2))", low, high)
+    function.SetParNames("N", "C")
+    function.SetParameters(10., 0.03)
     return function
 
 
-# unit and scale of every fitted parameter, for the printout, the CSV and the box
-PARAMETER_UNIT = {"N": ("ns", 1.), "S": ("ns", 1.), "C": ("ps", 1000.)}
+PARAMETER_UNIT = {"N": ("ns", 1.), "C": ("ps", 1000.)}
 
 
-# ------------------------------------------------------------------ one mode
 def mcp_live_runs(events, base, mcp_min):
-    """Runs where at least MCP_MIN_FRACTION of the base events have both MCPs above
-    mcp_min, and the fraction of every run."""
     both = (events["mcp_amp_0"] > mcp_min) & (events["mcp_amp_1"] > mcp_min)
     fractions = {int(run): float(both[base & (events["run"] == run)].mean())
                  for run in np.unique(events["run"][base])}
@@ -410,9 +365,6 @@ def mcp_live_runs(events, base, mcp_min):
 
 
 def analyse_point(mode, point, args, outdir, dropped, kept_only):
-    """Selection, Delta T and per-run correction of one point. Returns (selection row,
-    window row, per-run rows, {x name: (x, corrected Delta T)}) or the rows only when
-    the point is skipped."""
     energy, crystals, label = point["energy"], point["crystals"], point["label"]
     matrix_eta, matrix_phi = crystals[1]
     paths = [path for path in point["paths"] if has_events(path)]
@@ -453,7 +405,7 @@ def analyse_point(mode, point, args, outdir, dropped, kept_only):
                                      f"{crystal_label(crystals)}_table{point['table'][0]}-{point['table'][1]}")
     response, flat_vertices = None, None
     if crystals[0] != crystals[1]:
-        response = events["amplitude"]                        # 3x3 sum, not A_tot
+        response = events["amplitude"]
         flat_vertices = boundary_vertices(events, base)
         print(f"    boundary between the crystals on the hodoscope: {flat_vertices}")
     window_row, cuts = selection.select_point(events, RESISTANCE_2025, energy, dropped, kept_only,
@@ -467,7 +419,6 @@ def analyse_point(mode, point, args, outdir, dropped, kept_only):
 
 
 def finish_point(mode, events, args, row, window_row, position, energy, label):
-    """Delta T, gain selection and per-run correction of the events inside position."""
     delta, x_values, valid = delta_and_x(mode, events, args)
     selected = position & valid
     state = gain_state(mode, events)
@@ -487,15 +438,14 @@ def finish_point(mode, events, args, row, window_row, position, energy, label):
     return row, window_row, run_rows, pooled
 
 
-INCLUSIVE = "inclusive"     # key of the pooled (gain state, Delta T) of every selected event
+INCLUSIVE = "inclusive"
 
 
 def draw_inclusive(mode, label, states, deltas, outdir):
-    """Delta T of every selected event, all gain states, one histogram per state."""
     tag = f"{mode}_{label}_inclusive"
     n_bins = int(round(2 * Y_RANGE_NS / Y_BIN_NS))
     total = common.fill_histogram(f"h_{tag}", deltas[np.isfinite(deltas)], n_bins, -Y_RANGE_NS, Y_RANGE_NS)
-    total.SetTitle(f"{mode} {label}, all selected events;#DeltaT [ns];events")
+    total.SetTitle(f"{TITLE} {mode} {label}, all selected events;#DeltaT [ns];events")
     canvas = ROOT.TCanvas(f"c_{tag}", tag, 1000, 650)
     canvas.SetLogy()
     total.SetLineColor(ROOT.kBlack)
@@ -527,14 +477,14 @@ def analyse_mode(mode, files, args):
     os.makedirs(outdir, exist_ok=True)
     dropped, kept_only = runsets.resolve(args.runset, args.exclude_runs)
     selection_rows, window_rows, run_rows = [], [], []
-    pooled = {}                       # (crystal label, x name) -> (x list, y list)
+    pooled = {}
     for point in points_of(mode, files, args.good_runs):
         print(f"[{mode} {point['label']} table {point['table']} {point['energy']:>4} GeV] "
               f"runs {point['runs']}", flush=True)
         try:
             row, window_row, rows, point_pooled = analyse_point(mode, point, args, outdir,
                                                                 dropped, kept_only)
-        except Exception as error:               # one bad file must not stop the night run
+        except Exception as error:
             print(f"    FAILED: {type(error).__name__}: {error}", flush=True)
             selection_rows.append(dict(label=point["label"], energy=point["energy"],
                                        runs=" ".join(map(str, point["runs"])),
@@ -577,10 +527,9 @@ X_DISTRIBUTION_BINS = 400
 
 
 def draw_x_distribution(tag, x_name, x_values, edges, outdir):
-    """Every event of the TH2 against x, with the variable bin edges on top."""
     histogram = common.fill_histogram(f"hx_{tag}", x_values, X_DISTRIBUTION_BINS, 0.,
                                       float(edges[-1]) * 1.02)
-    histogram.SetTitle(f"{tag}: {len(x_values)} events, {len(edges) - 1} bins;{X_TITLE[x_name]};events")
+    histogram.SetTitle(f"{TITLE} {tag}: {len(x_values)} events, {len(edges) - 1} bins;{X_TITLE[x_name]};events")
     canvas = ROOT.TCanvas(f"cx_{tag}", tag, 1000, 650)
     canvas.SetLogy()
     histogram.SetLineColor(ROOT.kBlack)
@@ -607,9 +556,6 @@ PANELS_PER_PAGE, PANEL_COLUMNS = 16, 4
 
 
 def draw_projection_pages(projections_path, pdf_path):
-    """Delta T of every x bin with its fit, PANELS_PER_PAGE per page of one PDF. The
-    x range of each panel is the fitted peak +- 8 sigma (the whole window when the
-    slice was not fitted), so two populations in one bin show up at once."""
     handle = ROOT.TFile.Open(projections_path)
     names = sorted((key.GetName() for key in handle.GetListOfKeys()),
                    key=lambda name: int(name.rsplit("_", 1)[1]))
@@ -647,16 +593,20 @@ def resolution_vs_x(mode, label, x_name, x_values, y_values, outdir, args):
     tag = f"{mode}_{label}_{x_name}"
     finite = np.isfinite(x_values) & np.isfinite(y_values) & (np.abs(y_values) < Y_RANGE_NS)
     x_values, y_values = x_values[finite], y_values[finite]
-    if len(x_values) < args.per_bin:
+    needed = args.min_per_bin or args.per_bin
+    if len(x_values) < needed:
         print(f"    {tag}: only {len(x_values)} events, nothing to bin")
         return
-    edges = variable_edges(x_values, args.per_bin)
+    edges = (adaptive_edges(x_values, args.x_fine_bins, args.min_per_bin) if args.min_per_bin
+             else variable_edges(x_values, args.per_bin))
     print(f"    {tag}: {len(x_values)} events -> {len(edges) - 1} x bins", flush=True)
     draw_x_distribution(tag, x_name, x_values, edges, outdir)
-    th2 = fill_th2(f"h2_{tag}", f";{X_TITLE[x_name]};#DeltaT [ns]", x_values, y_values, edges)
+    th2 = fill_th2(f"h2_{tag}", f"{TITLE};{X_TITLE[x_name]};#DeltaT [ns]", x_values, y_values, edges)
     th2_file = ROOT.TFile(os.path.join(outdir, f"{tag}_th2.root"), "RECREATE")
     th2.Write()
     th2_file.Close()
+    if args.uniform_x_bins:
+        draw_uniform_th2(tag, x_name, x_values, y_values, outdir, args.uniform_x_bins)
 
     scale = 1. / math.sqrt(2.) if mode in ("crystals", "mcp-mcp") else 1.
     projection_file = ROOT.TFile(os.path.join(outdir, f"{tag}_projections.root"), "RECREATE")
@@ -685,8 +635,8 @@ def resolution_vs_x(mode, label, x_name, x_values, y_values, outdir, args):
     graph = common.make_graph([row["x_mean"] for row in rows], [row["sigma_ns"] for row in rows],
                               [row["err_sigma_ns"] for row in rows])
     graph.SetName(f"g_{tag}")
-    graph.SetTitle(f";{X_TITLE[x_name]};{Y_TITLE[mode]}")
-    curve = resolution_curve_stochastic(f"f_{tag}", rows[0]["x_low"], rows[-1]["x_high"])
+    graph.SetTitle(f"{TITLE};{X_TITLE[x_name]};{Y_TITLE[mode]}")
+    curve = resolution_curve(f"f_{tag}", rows[0]["x_low"], rows[-1]["x_high"])
     result = common.fit_graph(graph, curve)
     names = [curve.GetParName(index) for index in range(curve.GetNpar())]
     parameters = {}
@@ -742,8 +692,15 @@ def draw_resolution(tag, graph, curve, result, th2, outdir):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description="Time resolution of the 2025 test beam.\n\n"
+                    "  crystals  time difference between the two crystals the beam is aimed between\n"
+                    "  mcp-mcp   time difference between the two MCPs\n"
+                    "  ecal-mcp  ECAL time minus MCP time for single-crystal runs",
+        epilog="examples:\n"
+               "  python3 time_resolution.py --base skim_dir --outdir out --mode crystals --min-per-bin 2000 --second-larger\n"
+               "  python3 time_resolution.py --base skim_dir --outdir out --mode ecal-mcp --mcp-min 30",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base", required=True, help="directory of the per-run <run>_<E>_reco.root")
     parser.add_argument("--outdir", required=True)
     parser.add_argument("--mode", nargs="+", choices=("crystals", "mcp-mcp", "ecal-mcp"),
@@ -752,7 +709,21 @@ def main():
                                                             "good_run_list_2025.csv"))
     parser.add_argument("--per-bin", type=int, default=3000,
                         help="events in every x bin, counted from the highest x down")
+    parser.add_argument("--min-per-bin", type=int, default=0,
+                        help="if set: uniform x grid of --x-fine-bins merged from the top until every "
+                             "bin has this many events (overrides --per-bin)")
+    parser.add_argument("--uniform-x-bins", type=int, default=0,
+                        help="also save the TH2 of Delta T vs x in this many equal-width x bins")
+    parser.add_argument("--x-fine-bins", type=int, default=40)
     parser.add_argument("--sigma-noise", type=float, default=2.5, help="ECAL noise sigma_n [ADC]")
+    parser.add_argument("--min-atot", type=float, default=common.A_TOT_MIN, help="cut on the A_tot branch [ADC]")
+    parser.add_argument("--amp-max", type=float, default=0.,
+                        help="two-crystal Delta T: both amplitudes below this [ADC] (0 = no cut)")
+    parser.add_argument("--title", default="", help="prefix of every plot title (template, beam)")
+    parser.add_argument("--second-larger", action="store_true",
+                        help="two-crystal Delta T: keep only A_2 > A_1 (A[24] > A[31] for phi 5/6): "
+                             "A_eff is symmetric in the crystals, Delta T is not, so both sides of "
+                             "the boundary make two families")
     parser.add_argument("--mcp-min", type=float, default=60., help="cut on both mcp_A")
     parser.add_argument("--half", type=float, default=4., help="hodoscope half window [mm]")
     parser.add_argument("--position", choices=("hodoscope", "centroid"), default="hodoscope",
@@ -769,7 +740,10 @@ def main():
     parser.add_argument("--exclude-runs", nargs="*", type=int, default=[])
     runsets.add_argument(parser)
     args = parser.parse_args()
+    common.A_TOT_MIN = args.min_atot
 
+    global TITLE
+    TITLE = args.title
     common.style()
     files = run_files(args.base)
     print(len(files), "run files in", args.base)
