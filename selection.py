@@ -1,16 +1,3 @@
-"""
-The event selection shared by the energy and the time resolution.
-
-  base cut     A_tot > A_TOT_MIN and the run selection of runsets
-  hodoscope    window around the vertex of the response parabola on the hodoscope
-               (hodoscope_window.py), with its four +- 1 mm variations
-
-select_point() applies both and records the diagnostics of the parabola study;
-fit_dcb_per_run.py (energy) and time_resolution.py (time) both start from it. The
-response profiled on the hodoscope is A_tot unless another one is given (the 3x3 sum
-when the beam was aimed between two crystals).
-"""
-
 import common
 import hodoscope_window
 
@@ -18,19 +5,12 @@ MIN_EVENTS_IN_WINDOW = common.MIN_EVENTS_POOLED
 
 
 def centroid_mask(events, centre_eta, centre_phi, half=0.2):
-    """|pos_eta - X| < half and |pos_phi - Y| < half around the beam centre."""
     return ((abs(events["pos_eta"] - centre_eta) < half)
             & (abs(events["pos_phi"] - centre_phi) < half))
 
 
 def select_point(events, resistance, energy, dropped, kept_only, args, response=None,
                  vertex_when_flat=None):
-    """Base cut and hodoscope window of one (resistance, energy) point.
-
-    Returns (window_row, cuts): cuts is the dict of masks of
-    hodoscope_window.window_masks (nominal + the four shifted windows), or None when
-    the point is skipped, with the reason in window_row.
-    """
     base = (events["A_tot"] > common.A_TOT_MIN) & common.runset_mask(events["run"], dropped,
                                                                       kept_only)
     window_row = dict(resistance=resistance, energy=energy,

@@ -1,21 +1,3 @@
-"""
-The hodoscope window of resolution_hodo.py (post merge #2), used by stage 1 with
-
-The response <A_tot> is profiled against the hodoscope coordinate on the core of the
-beam (|A_tot / median - 1| < 0.10) and fitted with a parabola over [peak - h, peak + h]
-for every h in SCAN_HALVES; the vertex is the median over the scan and the result is
-accepted only if it does not depend on h (hodoscope_calib.parabola_scan, with the
-post-merge thresholds).
-
-Where the scan fails, resolution_hodo.py carries hand-set vertices (BAD_PARABOLA_*):
-they override the scan for those (resistance, energy) points and the window is
-labelled "<coords>-ecal_prof". A point with no parabola and no hand-set vertex made
-the flat script crash; here it is skipped with the reason printed and recorded.
-
-The parabola fits are weighted linear least squares; ROOT does them with the linear
-fitter behind TGraphErrors::Fit("pol2").
-"""
-
 import numpy as np
 import os
 import ROOT
@@ -25,21 +7,18 @@ import common
 import json
 import importlib
 
-CORE_FRACTION = 0.10             # |A_tot / median - 1| < CORE_FRACTION defines the beam core
+CORE_FRACTION = 0.10
 PROFILE_NBINS, PROFILE_MIN_PER_BIN, PROFILE_MIN_EVENTS = 40, 150, 3000
-SCAN_HALVES = (5., 6., 7., 8., 9., 10.)    # fit half-widths around the maximum [mm]
-MIN_FITS = 4                               # how many of them must give a maximum
-VERTEX_SPREAD_MAX = 5.                     # allowed excursion of the vertex over the scan [mm]
-WIDTH_SPREAD_MAX = 0.7                     # allowed relative spread of W over the scan
-VERTEX_SHIFT_MM = 1.                       # +- shift of the window for the vertex systematic
+SCAN_HALVES = (5., 6., 7., 8., 9., 10.)
+MIN_FITS = 4
+VERTEX_SPREAD_MAX = 5.
+WIDTH_SPREAD_MAX = 0.7
+VERTEX_SHIFT_MM = 1.
 
 COORDINATES = ("x", "y")
 
 
-
 def response_profile(coordinate, response):
-    """<response> against the coordinate in PROFILE_NBINS bins between the 0.5th and
-    the 99.5th percentile, error = RMS/sqrt(N) per bin. None when too few events."""
     finite = np.isfinite(coordinate)
     if finite.sum() < PROFILE_MIN_EVENTS:
         return None
@@ -61,23 +40,19 @@ def response_profile(coordinate, response):
 
 
 def profile_peak(centres, means):
-    """Position of the maximum, smoothed over three bins."""
     smoothed = np.convolve(means, np.ones(3) / 3., mode="same")
     smoothed[0], smoothed[-1] = means[0], means[-1]
     return float(centres[int(np.argmax(smoothed))])
 
 
 def parabola_fit(centres, means, errors, low, high, resistance, energy, outdir, coordinate_name):
-    """Weighted quadratic on the profile points inside [low, high]. Returns
-    (vertex, relative curvature in %/mm^2, chi2/ndf, n) or None when the fit has no
-    maximum inside its own range."""
     inside = (centres >= low) & (centres <= high)
     n_points = int(inside.sum())
     if n_points < 6:
         return None
     graph = common.make_graph(centres[inside], means[inside], errors[inside])
     quadratic = ROOT.TF1(common.unique_name("hodo_pol2"), "pol2", low, high)
-    graph.Fit(quadratic, "QN")                 # polynomial: ROOT uses the linear fitter
+    graph.Fit(quadratic, "QN")
 
     canvas = ROOT.TCanvas("hodo_profile", "Hodoscope profile", 800, 600)
     graph.SetTitle(f"{energy}GeV_{resistance}ohm;hodoscope coordinate [mm];<A_tot>")
@@ -103,8 +78,6 @@ def parabola_fit(centres, means, errors, low, high, resistance, energy, outdir, 
 
 
 def parabola_scan(profile, resistance, energy, outdir, coordinate_name):
-    """Vertex from the scan of the fit half-width. Always returns a
-    dict with 'ok' and, when not ok, 'why'."""
     out = dict(ok=False, why="", vertex=np.nan, width=np.nan, vertex_spread=np.nan,
                width_spread=np.nan, chi2ndf=np.nan, n_fits=0, peak=np.nan)
     if profile is None:
@@ -179,7 +152,6 @@ def hodoscope_windows(hodo_x, hodo_y, a_tot, base_mask, resistance, energy, half
             vertex = vertex_when_flat[coordinate_name]
             windows[coordinate_name] = (vertex - half, vertex + half)
             fallback.append(coordinate_name + "flat")
-        # the hand-set vertex overrides the scan for the points listed
         if (resistance, energy) in BAD_PARABOLA_VERTEX[coordinate_name]:
             vertex = BAD_PARABOLA_VERTEX[coordinate_name][(resistance, energy)]
             half_used = BAD_PARABOLA_HALF[coordinate_name].get((resistance, energy), half)
@@ -190,7 +162,6 @@ def hodoscope_windows(hodo_x, hodo_y, a_tot, base_mask, resistance, energy, half
 
 
 def window_masks(hodo_x, hodo_y, base_mask, window_x, window_y):
-    """Nominal cut and the four +- VERTEX_SHIFT_MM variations of resolution_hodo.py."""
     finite = base_mask & np.isfinite(hodo_x) & np.isfinite(hodo_y)
 
     def cut(shift_x, shift_y):

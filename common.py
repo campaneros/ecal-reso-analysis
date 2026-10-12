@@ -1,14 +1,3 @@
-"""
-What more than one stage needs: constants, event reading, the double Crystal Ball
-fit, the run-combination statistics and the CSV / canvas helpers.
-
-Everything numerical that is a FIT goes through ROOT (Minuit2 via ROOT::Fit::Fitter,
-with an explicit HESSE after MIGRAD, exactly as the iminuit code did with migrad()
-followed by hesse()). numpy is used only to select events and to compute plain
-statistics such as means, RMS and quantiles.
-
-"""
-
 import csv
 import glob
 import math
@@ -20,19 +9,18 @@ import numpy as np
 import ROOT
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(HERE))          # runsets.py lives in the repository root
-import runsets                                      # noqa: E402  (after the path insert)
+sys.path.insert(0, os.path.dirname(HERE))
+import runsets
 
 ROOT.gROOT.SetBatch(True)
-ROOT.gErrorIgnoreLevel = ROOT.kError      # HESSE failures are handled, not printed
+ROOT.gErrorIgnoreLevel = ROOT.kError
 ROOT.TH1.AddDirectory(False)
 ROOT.Math.MinimizerOptions.SetDefaultMinimizer("Minuit2")
 
-# ------------------------------------------------------------------ constants
 SCALE = {
   "a3x3": {340: 3500 / 150., 400: 1080 / 40., 500: 3340 / 100.},
   "a1x1": {340: 2450 / 150., 400: 756 / 40., 500: 2238 / 100.},
-}   # ADC per GeV, from fit.sh
+}
 
 FILES = {340: ("reco_340ohm", "*_merged.root"),
          400: ("reco_400ohm", "*_400_merged.root"),
@@ -41,16 +29,15 @@ TRUE_ENERGY = {20: 20.00, 30: 30.00, 40: 39.99, 50: 49.98, 60: 59.97, 80: 79.90,
                100: 99.75, 120: 119.48, 150: 148.73, 175: 172.67, 200: 196.08,
                225: 218.82, 250: 240.76, 275: 261.77, 300: 281.74}
 
-A_TOT_MIN = 100.                 # threshold on the A_tot branch, in every selection
-SYNCHROTRON_COEFF = 1.92e-7      # sigma/E [%] = coeff * E_true^2.5
+A_TOT_MIN = 100.
+SYNCHROTRON_COEFF = 1.92e-7
 
-# runs with fewer events than this are not fitted individually
 MIN_EVENTS_PER_RUN = 300
 MIN_EVENTS_POOLED = 500
 
 TAIL_NAMES = ("alpha_l", "alpha_h", "n_l", "n_h")
 DCB_PARAMETERS = TAIL_NAMES + ("mean", "sigma", "norm")
-HISTOGRAM_NBINS, HISTOGRAM_LO, HISTOGRAM_HI = 8000, 0., 8000.   # fit.sh: A_tot>>h(8000,0,8000)
+HISTOGRAM_NBINS, HISTOGRAM_LO, HISTOGRAM_HI = 8000, 0., 8000.
 
 COLOUR = {340: ROOT.kAzure + 2, 400: ROOT.kOrange + 7, 500: ROOT.kGreen + 2}
 MARKER = {340: 20, 400: 21, 500: 22}
@@ -64,14 +51,11 @@ def synchrotron_pct(energy_true):
     return SYNCHROTRON_COEFF * energy_true ** 2.5
 
 
-
-# ------------------------------------------------------------------ files
 def energy_of(path):
     return int(re.match(r"(\d+)", os.path.basename(path)).group(1))
 
 
 def data_files(base, resistance):
-    """The merged ROOT files of one resistance, sorted by nominal energy."""
     directory, pattern = FILES[resistance]
     return sorted(glob.glob(os.path.join(base, directory, pattern)), key=energy_of)
 
@@ -86,13 +70,10 @@ def resistance_energy_pairs(base, resistances, excluded_points=()):
 
 
 def parse_excluded_points(items):
-    """--exclude 340:275 -> {(340, 275)}"""
     return {tuple(int(value) for value in item.split(":")) for item in items}
 
 
 ROOT.gInterpreter.Declare(rf'''
-// sum of the amplitudes of the crystals inside a (2*half-1)x(2*half-1) matrix
-// around ieta = 18, iphi = 6: half = 2 gives the 3x3 (ieta 17-19, iphi 5-7)
 double pipeline_sum_matrix(const ROOT::RVecD &amplitude,
                            const ROOT::RVec<unsigned short> &ieta,
                            const ROOT::RVec<unsigned short> &iphi, int eta_center, int phi_center, int half) {{
@@ -103,7 +84,6 @@ double pipeline_sum_matrix(const ROOT::RVecD &amplitude,
   return total;
 }}
 
-// first hodoscope cluster of a plane, NaN when the plane has none
 double pipeline_first_or_nan(const ROOT::RVecF &positions) {{
   return positions.size() ? (double)positions[0] : std::nan("");
 }}
@@ -111,17 +91,6 @@ double pipeline_first_or_nan(const ROOT::RVecF &positions) {{
 
 
 def read_events(path, ETA_CENTRE, PHI_CENTRE, amplitude="a3x3", extra=None):
-    """All the per-event quantities the pipeline uses, as numpy arrays.
-
-    path       one file or a list of files (chained)
-    amplitude  a3x3  the 3x3 sum around (18, 6), rebuilt from the A branch, as in
-                     resolution_hodo.py and drift_dcb_all.py
-               atot  the A_tot branch, as in uniformita_pos.py and profili_pernorm.py
-    extra      {name: expression} defined on the frame and returned as well (the time
-               branches of time_resolution.py)
-    The threshold A_tot > A_TOT_MIN is ALWAYS applied to the A_tot branch, whatever
-    the amplitude fitted: that is what every flat script does.
-    """
     if isinstance(path, (list, tuple)):
         files = ROOT.std.vector("string")()
         for name in path:
@@ -162,8 +131,6 @@ def read_events(path, ETA_CENTRE, PHI_CENTRE, amplitude="a3x3", extra=None):
 
 
 def hodoscope_xy(events, yplane="y1"):
-    """x = mean of the two x planes, y from the requested plane; NaN where the plane
-    does not have exactly one cluster (hodoscope_calib.hodo_xy)."""
     both_x = ((events["hodo_x1_nclusters"] == 1) & (events["hodo_x2_nclusters"] == 1)
               & np.isfinite(events["hodo_x1"]) & np.isfinite(events["hodo_x2"]))
     hodo_x = np.where(both_x, 0.5 * (events["hodo_x1"] + events["hodo_x2"]), np.nan)
@@ -181,10 +148,7 @@ def runset_mask(run, dropped, kept_only):
     return mask
 
 
-# ------------------------------------------------------------------ double Crystal Ball
 ROOT.gInterpreter.Declare(r'''
-// DoubleSidedCrystalballFunction of dcb.cxx, with t in double precision as in the
-// numpy version dcb_func of uniformita_pos.py / drift_dcb_all.py
 double pipeline_dcb(double *x, double *par) {
   const double alpha_l = par[0], alpha_h = par[1], n_l = par[2], n_h = par[3];
   const double mean = par[4], sigma = par[5], norm = par[6];
@@ -212,7 +176,6 @@ def unique_name(prefix):
 
 
 def histogram_stats(counts, centres, low, high):
-    """Mean and RMS of a histogram restricted to [low, high] (TH1 with SetRangeUser)."""
     inside = (centres >= low) & (centres <= high)
     selected_counts, selected_centres = counts[inside], centres[inside]
     total = selected_counts.sum()
@@ -273,23 +236,17 @@ def fill_histogram(name, values, nbins, low, high):
     return histogram
 
 
-# iminuit stops MIGRAD at EDM < 0.002 * tol * errordef with tol = 0.1; ROOT's default
-# tolerance is 0.01, ten times tighter, and the two then stop at slightly different
-# points of the same valley. Same tolerance, same stopping point.
 MINUIT_TOLERANCE = 0.1
 
 
 def initial_step(value):
-    """iminuit's default initial step: a tenth of the seed, 0.1 for a seed of zero."""
     return 0.1 * abs(value) if value != 0 else 0.1
 
 
 def _run_fitter(function, data, seeds, limits, fixed_names):
-    """MIGRAD then HESSE on a ROOT::Fit::BinData with the TF1 as model. The FitResult
-    lives inside the Fitter, so its numbers are copied out before the Fitter dies."""
     fitter = ROOT.Fit.Fitter()
     fitter.Config().MinimizerOptions().SetTolerance(MINUIT_TOLERANCE)
-    wrapped = ROOT.Math.WrappedMultiTF1(function, 1)   # must outlive the fit: no copy
+    wrapped = ROOT.Math.WrappedMultiTF1(function, 1)
     fitter.SetFunction(wrapped, False)
     for index, name in enumerate(DCB_PARAMETERS):
         settings = fitter.Config().ParSettings(index)
@@ -316,23 +273,6 @@ def _copy_result(result, hesse_ok):
 
 
 def fit_dcb(values, energy, resistance, amplitude, fixed_tails=None):
-    """Double Crystal Ball fit of one set of amplitudes: uniformita_pos.fit_dcb.
-
-    the binning is
-    Freedman-Diaconis on the events inside the window, empty bins are ignored and the
-    bin error is sqrt(N) (Neyman chi2, as TH1::Fit and as the iminuit LeastSquares
-    with ey = sqrt(max(y, 1)) on the non-empty bins). Three MIGRAD+HESSE rounds, each
-    re-seeded from the previous one. When HESSE fails the four tail parameters are
-    frozen at their fitted values and (mean, sigma, norm) are refitted: peak and sigma
-    do not move, but the errors become computable.
-
-    fixed_tails: dict of tail parameters held constant, from the pooled fit of the
-    same energy and selection (the "fixed" model of --tails).
-
-    Returns None when there is no usable window, otherwise a dict with peak, sigma,
-    their errors, chi2, ndf, the tails, the window, the number of events inside it and
-    the histogram + TF1 (to be written to a ROOT file or drawn).
-    """
     window = fit_window(values, energy, resistance, amplitude)
     if not window_is_usable(window, values):
         window = mode_window(values, energy, resistance, amplitude)
@@ -345,7 +285,7 @@ def fit_dcb(values, energy, resistance, amplitude, fixed_tails=None):
     binwidth = freedman_diaconis_binwidth(in_window)
     nbins = max(int(round((high - low) / binwidth)), 12)
     histogram = fill_histogram(unique_name("dcb_hist"), values, nbins, low, high)
-    data = ROOT.Fit.BinData()               # default options: empty bins skipped
+    data = ROOT.Fit.BinData()
     ROOT.Fit.FillData(data, histogram)
     if data.NPoints() < 12:
         return None
@@ -369,7 +309,6 @@ def fit_dcb(values, energy, resistance, amplitude, fixed_tails=None):
         seeds = dict(zip(DCB_PARAMETERS, result["values"]))
     errors_ok = result["hesse_ok"] and result["errors"][5] > 0 and result["errors"][4] > 0
     if not errors_ok:
-        # tails frozen at their fitted values, only mean / sigma / norm refitted
         result_fixed = _run_fitter(function, data, seeds, limits, set(TAIL_NAMES))
         if result_fixed["hesse_ok"] and result_fixed["errors"][5] > 0 and result_fixed["errors"][4] > 0:
             result = result_fixed
@@ -387,14 +326,12 @@ def fit_dcb(values, energy, resistance, amplitude, fixed_tails=None):
 
 
 def relative_width(fit):
-    """(100 * sigma/peak, its error) from the HESSE errors, as uniformita_pos.rel."""
     value = 100 * fit["sigma"] / fit["peak"]
     error = value * math.sqrt((fit["err_sigma"] / fit["sigma"]) ** 2
                               + (fit["err_peak"] / fit["peak"]) ** 2)
     return value, error
 
 
-# ------------------------------------------------------------------ run combination
 def weighted_mean(values, errors, weights):
     values, errors, weights = (np.asarray(item, float) for item in (values, errors, weights))
     good = np.isfinite(values) & np.isfinite(errors) & (weights > 0)
@@ -407,9 +344,6 @@ def weighted_mean(values, errors, weights):
 
 
 def weighted_scatter(values, weights):
-    """Error on the weighted mean from the WEIGHTED VARIANCE of the values, which
-    already contains the fit noise and the run-to-run spread. Undefined (NaN) with a
-    single run."""
     values, weights = np.asarray(values, float), np.asarray(weights, float)
     good = np.isfinite(values) & (weights > 0)
     values, weights = values[good], weights[good]
@@ -424,9 +358,6 @@ def weighted_scatter(values, weights):
 
 
 def syst_for_unit_chi2(values, errors):
-    """Extra error s, in quadrature, such that the fit of the points to a constant has
-    chi2/ndf = 1 (drift_dcb_all.syst_for_unit_chi2). Returns (s, chi2/ndf without s,
-    weighted mean with s). s = 0 when the points are already compatible."""
     values, errors = np.asarray(values, float), np.asarray(errors, float)
     count = len(values)
     if count < 2 or not np.all(np.isfinite(values)) or not np.all(errors > 0):
@@ -457,21 +388,16 @@ def syst_for_unit_chi2(values, errors):
     return float(extra), float(chi2_zero), float((values * weights).sum() / weights.sum())
 
 
-# ------------------------------------------------------------------ resolution function
 def resolution_function(name, low, high):
-    """sigma/E [%] = N/E (+) S/sqrt(E) (+) C with N in GeV, S and C in percent."""
     function = ROOT.TF1(name, "sqrt(pow(100*[0]/x, 2) + [1]*[1]/x + [2]*[2])", low, high)
     function.SetParNames("N", "S", "C")
     return function
 
 
 def fit_graph(graph, function, fixed=(), lower_limit_zero=True):
-    """TGraphErrors fit with MIGRAD + HESSE. fixed: parameter names to hold at their
-    current value. Returns dict(values, errors, chi2, ndf, valid, hesse_ok) and leaves
-    the fitted parameters in the TF1."""
     fitter = ROOT.Fit.Fitter()
     fitter.Config().MinimizerOptions().SetTolerance(MINUIT_TOLERANCE)
-    wrapped = ROOT.Math.WrappedMultiTF1(function, 1)   # must outlive the fit: no copy
+    wrapped = ROOT.Math.WrappedMultiTF1(function, 1)
     fitter.SetFunction(wrapped, False)
     data = ROOT.Fit.BinData()
     ROOT.Fit.FillData(data, graph)
@@ -504,7 +430,6 @@ def make_graph(x_values, y_values, y_errors=None, x_errors=None):
                              np.ascontiguousarray(y_errors, float))
 
 
-# ------------------------------------------------------------------ CSV
 def format_value(value):
     if isinstance(value, float):
         return "nan" if not np.isfinite(value) else f"{value:.6g}"
@@ -537,7 +462,6 @@ def _convert(text):
 
 
 def read_csv(path):
-    """List of dicts, numbers converted; 'nan' becomes float nan."""
     with open(path) as handle:
         return [{key: _convert(value) for key, value in row.items()}
                 for row in csv.DictReader(handle)]
@@ -549,7 +473,6 @@ def require(path):
     return path
 
 
-# ------------------------------------------------------------------ drawing
 def style():
     ROOT.gStyle.SetOptStat(0)
     ROOT.gStyle.SetOptFit(0)
@@ -589,8 +512,6 @@ def text_box(lines, x_low, y_low, x_high, y_high, size=0.03, border_colour=ROOT.
 
 
 def run_axis_frame(labels, y_low, y_high, title):
-    """An empty histogram whose x axis carries one text label per run, to draw graphs
-    of per-run quantities on top of ("P" option, x = run index)."""
     frame = ROOT.TH1F(unique_name("run_frame"), title, len(labels), -0.5, len(labels) - 0.5)
     for index, label in enumerate(labels):
         frame.GetXaxis().SetBinLabel(index + 1, str(label))
@@ -603,7 +524,6 @@ def run_axis_frame(labels, y_low, y_high, title):
 
 
 def keep(*objects):
-    """ROOT draws pointers; Python garbage-collects them. Hold references here."""
     _kept.extend(objects)
     return objects[0] if len(objects) == 1 else objects
 
