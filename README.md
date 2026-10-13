@@ -1,18 +1,28 @@
 # Time resolution between two crystals, ECAL test beam H4 2025
 
-Three scripts to measure the time resolution of two neighbouring crystals when the beam is aimed between them (runs with `phi 5/6` in the good-run list). They need Python 3 with PyROOT and numpy.
+Four scripts to measure the time resolution of two neighbouring crystals when the beam is aimed between them (runs with `phi 5/6` in the good-run list). They need Python 3 with PyROOT and numpy.
 
 ```
-skim files  ->  two_crystal_tree.py  ->  per_run_dcb.py
-                                     ->  th2_per_run.py
+reco files  ->  skim_time.py  ->  skim files  ->  two_crystal_tree.py  ->  per_run_dcb.py
+                                                                       ->  th2_per_run.py
 ```
+
+## 0. Skim the reco files
+
+`skim_time.py` copies every `*.root` under `--source` (recursively) keeping only the branches the next steps read (32 of them: amplitudes, times, gain and fit status, hodoscope, MCP, clock). The output has the same file names, `<run>_<energy>_reco.root`. A file that lacks some of the branches is skimmed with the ones it has and the missing ones are printed. Files already in `--outdir` are skipped unless `--overwrite` is given.
+
+```
+python3 skim_time.py --source <dir with the reco files> --outdir <skim dir> [--runs 19395 19396 ...]
+```
+
+On lxplus ROOT comes from `source /cvmfs/sft.cern.ch/lcg/views/LCG_107/x86_64-el9-gcc13-opt/setup.sh`. The skim files are much smaller than the reco files and are the input of the next step.
 
 ## 1. Merge the runs into a tree
 
-`two_crystal_tree.py` reads the per-run reco files `<run>_<energy>_reco.root` (tree `h4_reco`) and merges the two-crystal runs of one eta into a flat tree called `two_crystals`, with no cut.
+`two_crystal_tree.py` reads the per-run files `<run>_<energy>_reco.root` (tree `h4_reco`) and merges the two-crystal runs of one eta into a flat tree called `two_crystals`, with no cut.
 
 ```
-python3 two_crystal_tree.py --skim-dir <dir with the reco files> --eta 18 \
+python3 two_crystal_tree.py --skim-dir <skim dir> --eta 18 \
     --out two_crystal_tree_eta18.root --good-runs good_run_list_2025.csv
 ```
 
